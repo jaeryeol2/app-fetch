@@ -191,6 +191,38 @@ const serializeObject = (
 };
 
 /**
+ * 최상위 배열 값을 배열 인덱스 키 규칙(key[index])에 맞게 직렬화하며 순환 참조를 감지합니다.
+ *
+ * @param {unknown[]} value 직렬화할 배열
+ * @param {string} combineKey 부모 키와 결합된 현재 키
+ * @param {WeakSet<object>} seen 순환 참조 감지용 WeakSet
+ * @param {FlatQueryFunctionType} flatQuery 재귀 직렬화 헬퍼 함수
+ * @returns {string[]} 직렬화된 쿼리 스트링 배열
+ * @throws {Error} 순환 참조 감지 시 예외 발생
+ * @author jaeryeol2
+ */
+const serializeTopLevelArray = (
+  value: unknown[],
+  combineKey: string,
+  seen: WeakSet<object>,
+  flatQuery: FlatQueryFunctionType,
+): string[] => {
+  if (seen.has(value)) {
+    throw new Error('Circular reference detected in query parameters');
+  }
+
+  seen.add(value);
+  const array: string[] = [];
+  for (const [index, item] of value.entries()) {
+    const arrayKey = `${combineKey}[${index}]`;
+    array.push(...serializeArray(arrayKey, item, seen, flatQuery));
+  }
+  seen.delete(value);
+
+  return array;
+};
+
+/**
  * 중첩 쿼리 객체를 평탄화하여 쿼리 스트링 배열로 직렬화합니다.
  * WeakSet을 사용하여 객체의 순환 참조(Circular Reference)를 안전하게 감지하고 차단합니다.
  *
@@ -222,15 +254,7 @@ const flatQuery = (
     const combineKey = parentKey ? `${parentKey}.${key}` : key;
 
     if (Array.isArray(value)) {
-      if (seen.has(value)) {
-        throw new Error('Circular reference detected in query parameters');
-      }
-      seen.add(value);
-      for (const [index, item] of value.entries()) {
-        const arrayKey = `${combineKey}[${index}]`;
-        array.push(...serializeArray(arrayKey, item, seen, flatQuery));
-      }
-      seen.delete(value);
+      array.push(...serializeTopLevelArray(value, combineKey, seen, flatQuery));
     } else if (typeof value === 'object') {
       array.push(...serializeObject(value, combineKey, seen, flatQuery));
     } else if (
