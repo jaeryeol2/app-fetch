@@ -20,6 +20,14 @@ import {
 import { composeInterceptors } from './helpers/interceptor-helper';
 
 /**
+ * 쿼리 파라미터 직렬화 중 순환 참조가 감지되었을 때 던지는 예외 메시지입니다.
+ * 순환 참조 감지 지점 전체(flatQuery, serializeArray, serializeTopLevelArray,
+ * stringifyOrThrowCircular)가 이 상수 하나를 공유합니다.
+ */
+const CIRCULAR_REFERENCE_MESSAGE =
+  'Circular reference detected in query parameters';
+
+/**
  * Map/Set 인스턴스의 순회 가능한 값 목록을 배열로 반환합니다. 그 외 일반 객체는
  * 자체 열거 가능한 속성 값을 배열로 반환합니다.
  *
@@ -38,13 +46,17 @@ const getIterableEntries = (value: object): unknown[] => {
  * JS 엔진마다 문구가 다른 JSON.stringify 예외 메시지에 의존하지 않는,
  * 엔진 독립적인 순환 참조 탐지 방식입니다.
  *
+ * `flatQuery`/`serializeArray`/`serializeTopLevelArray`가 재귀 경로 전체에서
+ * 공유하는 동일한 `seen` WeakSet을 그대로 전달받아, 특수 객체(Map/Set 등) 내부에서
+ * 상위 경로의 객체를 다시 참조하는 교차 순환 참조까지 하나의 상태로 탐지합니다.
+ *
  * @param {unknown} value 검사할 값
- * @param {WeakSet<object>} [seen] 순환 참조 감지용 WeakSet
+ * @param {WeakSet<object>} seen 순환 참조 감지용 WeakSet (호출 경로 전체에서 공유)
  * @returns {boolean} 순환 참조 여부
  */
 const hasCircularReference = (
   value: unknown,
-  seen: WeakSet<object> = new WeakSet(),
+  seen: WeakSet<object>,
 ): boolean => {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -65,13 +77,17 @@ const hasCircularReference = (
 /**
  * Map, Set, RegExp 등 특수 객체 타입을 쿼리 스트링 표현을 위한 직렬화 문자열로 변환합니다.
  *
- * @param {object} value 직렬화할 특수 객체
+ * @param {unknown} value 직렬화할 특수 객체
+ * @param {WeakSet<object>} seen 순환 참조 감지용 WeakSet (호출 경로 전체에서 공유)
  * @returns {string | null} 직렬화된 문자열 또는 실패 시 null
  * @throws {Error} 순환 참조 감지 시 예외 발생
  */
-const stringifyOrThrowCircular = (value: unknown): string | null => {
-  if (hasCircularReference(value)) {
-    throw new Error('Circular reference detected in query parameters');
+const stringifyOrThrowCircular = (
+  value: unknown,
+  seen: WeakSet<object>,
+): string | null => {
+  if (hasCircularReference(value, seen)) {
+    throw new Error(CIRCULAR_REFERENCE_MESSAGE);
   }
 
   try {
@@ -81,18 +97,21 @@ const stringifyOrThrowCircular = (value: unknown): string | null => {
   }
 };
 
-const stringifySpecialObject = (value: object): string | null => {
+const stringifySpecialObject = (
+  value: object,
+  seen: WeakSet<object>,
+): string | null => {
   if (value instanceof Map) {
-    return stringifyOrThrowCircular(Array.from(value.entries()));
+    return stringifyOrThrowCircular(Array.from(value.entries()), seen);
   }
   if (value instanceof Set) {
-    return stringifyOrThrowCircular(Array.from(value));
+    return stringifyOrThrowCircular(Array.from(value), seen);
   }
   if (value instanceof RegExp) {
     return value.toString();
   }
 
-  return stringifyOrThrowCircular(value);
+  return stringifyOrThrowCircular(value, seen);
 };
 
 /**
@@ -126,7 +145,7 @@ const serializeArray = (
 
   if (Array.isArray(item)) {
     if (seen.has(item)) {
-      throw new Error('Circular reference detected in query parameters');
+      throw new Error(CIRCULAR_REFERENCE_MESSAGE);
     }
     seen.add(item);
     const arrayResult: string[] = [];
@@ -145,7 +164,7 @@ const serializeArray = (
       return flatQuery(item, arrayKey, seen);
     }
 
-    const objectValue = stringifySpecialObject(item);
+    const objectValue = stringifySpecialObject(item, seen);
     return objectValue ? [encodeKeyValue(arrayKey, objectValue)] : [];
   }
 
@@ -186,7 +205,7 @@ const serializeObject = (
     return flatQuery(value, combineKey, seen);
   }
 
-  const objectValue = stringifySpecialObject(value);
+  const objectValue = stringifySpecialObject(value, seen);
   return objectValue ? [encodeKeyValue(combineKey, objectValue)] : [];
 };
 
@@ -208,7 +227,7 @@ const serializeTopLevelArray = (
   flatQuery: FlatQueryFunctionType,
 ): string[] => {
   if (seen.has(value)) {
-    throw new Error('Circular reference detected in query parameters');
+    throw new Error(CIRCULAR_REFERENCE_MESSAGE);
   }
 
   seen.add(value);
@@ -241,7 +260,7 @@ const flatQuery = (
   const array: string[] = [];
 
   if (seen.has(query)) {
-    throw new Error('Circular reference detected in query parameters');
+    throw new Error(CIRCULAR_REFERENCE_MESSAGE);
   }
 
   seen.add(query);
