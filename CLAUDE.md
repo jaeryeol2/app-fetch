@@ -1,6 +1,6 @@
 # Claude Code Guidelines - app-fetch
 
-See [@AGENTS.md](file:///C:/vscode/repository/app-fetch/AGENTS.md) for full project domain knowledge, core principles, and architecture rules.
+See [@AGENTS.md](AGENTS.md) for full project domain knowledge, core principles, and architecture rules.
 
 ## Quick Commands
 - `npm run build` : tsdown bundle build (ESM/CJS/IIFE/DTS)
