@@ -146,9 +146,30 @@ generated them. After cloning, wire up your own:
 ```bash
 npm i -g @nanonets/graft
 graft init && graft build
+git config core.hooksPath .githooks
 ```
 
 `init` writes `.claude/helpers/` and `.claude/settings.json` for your machine;
 `build` generates `graft/` (deterministic, no API key). The tracked
 `AGENTS.md` block, `.mcp.json`, and `.claude/skills/graft/` are identical on
 every machine, so re-running `init` produces no diff.
+
+## Index freshness after changing checkouts
+
+The gitnexus and graft indexes describe the commit they were built from, not
+your current HEAD. Whenever HEAD moves in a way the agent did not author —
+`git pull`, `git checkout`/`switch`, a new `git worktree` — refresh before
+answering any structural question:
+
+```bash
+node .gitnexus/run.cjs analyze --index-only
+graft build
+```
+
+Both are incremental: only the files that actually changed are re-parsed.
+
+`graft build` is wired into the `post-merge` and `post-checkout` hooks in
+`.githooks/`, so it runs on its own once `core.hooksPath` is set. Do not wire
+`analyze` into a git hook — it can block for up to 120s and a timeout risks
+corrupting the KuzuDB index, which is why gitnexus's own PostToolUse hook only
+reports staleness instead of fixing it.

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refresh the graft context graph after HEAD moves (incremental, a few seconds).
+#
+# The gitnexus index is deliberately NOT refreshed here: `analyze` can block for
+# up to 120s and a timeout risks corrupting the KuzuDB index, so it is left to
+# the agent to run on demand (see "Index freshness after changing checkouts" in
+# AGENTS.md).
+command -v graft >/dev/null 2>&1 && graft build >/dev/null 2>&1
+exit 0
