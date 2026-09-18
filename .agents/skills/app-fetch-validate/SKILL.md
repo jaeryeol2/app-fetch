@@ -51,4 +51,4 @@ npm test
 ## 📚 Detailed Reference Documents (References)
 - [8 Target Environments Specification](./references/target-environments.md)
 - [Dynamic/Varied Data & Fuzzing Generation Guidelines](./references/dynamic-generators.md)
-- [Harness Engineering Rules](../../rules/harness-engineering.md)
+- [Testing Standards](../../rules/testing-standards.md)

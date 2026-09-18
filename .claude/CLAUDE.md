@@ -11,7 +11,7 @@ See [@AGENTS.md](../AGENTS.md) for full project domain knowledge, core principle
 ## Rules
 @rules/app-fetch-core.md
 @rules/coding-standards.md
-@rules/harness-engineering.md
+@rules/testing-standards.md
 
 ## Skills (`.claude/skills/`)
 Auto-discovered native Claude Code skills:

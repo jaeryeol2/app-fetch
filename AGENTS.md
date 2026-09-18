@@ -38,14 +38,14 @@ app-fetch/
 6. **Preserve Native Headers**: When merging headers, always process explicitly via `Headers.set()` to prevent property loss from string overwriting.
 7. **Nested Query Serialization & Circular Reference Prevention**: Support serialization of arrays/nested objects/Date/Map/Set/RegExp, with `WeakSet`-based circular-reference detection.
 8. **AbortSignal Composition Safety**: Safely compose the user's `signal` and the built-in `timeout` signal via `AbortSignal.any`, with a fallback for older environments.
-9. **Mandatory Dynamic/Varied Scenario Validation Across the 8 Target Environments**: Vue3/Nuxt3/React18-19/Next.js App Router/NestJS/JSP-legacy/server template engines/bundles (ESM·CJS·IIFE) — all 8 environments must be tested with dynamic random data on every run, not static fixtures — see `harness-engineering.md` for details.
+9. **Mandatory Dynamic/Varied Scenario Validation Across the 8 Target Environments**: Vue3/Nuxt3/React18-19/Next.js App Router/NestJS/JSP-legacy/server template engines/bundles (ESM·CJS·IIFE) — all 8 environments must be tested with dynamic random data on every run, not static fixtures — see `testing-standards.md` for details.
 
 ---
 
 ## Rules (`.agents/rules/`)
 - [Core Architecture & Standards](.agents/rules/app-fetch-core.md): Project overview, tech stack, directory structure, and details of Core Rules 1-8.
 - [Coding Standards](.agents/rules/coding-standards.md): TypeScript/JavaScript coding standards, function declaration style, SonarQube compliance items.
-- [Harness Engineering](.agents/rules/harness-engineering.md): The 8 target-environment matrix, mandatory dynamic/random scenario generation, SSR/CSR dual-mode validation, `appFetch.create()` instance isolation, varied body and response formats, failure and error-handling coverage, and the `tests/`-only file location rule (details of Core Rule 9).
+- [Testing Standards](.agents/rules/testing-standards.md): The 8 target-environment matrix, mandatory dynamic/random scenario generation, SSR/CSR dual-mode validation, `appFetch.create()` instance isolation, varied body and response formats, failure and error-handling coverage, and the `tests/`-only file location rule (details of Core Rule 9).
 
 ## Skills (`.agents/skills/`)
 - [app-fetch-validate](.agents/skills/app-fetch-validate/SKILL.md): A step-by-step runbook from build → static analysis → 8-environment matrix testing.

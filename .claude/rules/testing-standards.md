@@ -1,18 +1,16 @@
-# app-fetch Harness Engineering & Test Architecture Rules
+# app-fetch Testing Standards
 
-This document defines the unit-test execution, 8 target-environment validation, dynamic/varied scenarios, dual-mode, and error scenario guidelines specified in Rule 9 of `AGENTS.md`.
+This document defines what a test must cover to satisfy Rule 9 of `AGENTS.md`: the 8 target environments, dynamic/varied scenario generation, SSR/CSR dual mode, instance isolation, data formats, failure handling, file location, and the lint/compile gate.
 
 ---
 
-## 1. Zero-Dependency, Strict Type Safety & Coding Standards Principles
-- **Zero-Dependency**: Completely forbid dependencies on external HTTP/query libraries (`axios`, `qs`, `got`, `ofetch`, etc.); use only the native Web Fetch API.
-- **`any` is strictly prohibited**: Follow `strict` mode, and handle uncertain boundary values with `unknown`, type guards, type narrowing, and explicit generic interfaces.
-- **Switch to `switch` when there are more than 4 conditional branches**: Use `if` when branch conditions are 4 or fewer; otherwise (5 or more), use a `switch` statement or a strategy pattern for readability and cognitive-complexity optimization.
-- **Prohibit `Array.prototype.forEach` & follow `for...of` / optimized loops**:
-  - `forEach` usage is completely banned.
-  - Use higher-order functions such as `map`, `filter`, `reduce` for transformation/filtering.
-  - Use `for...of` as the top-priority standard for simple iteration (side-effects).
-  - In sections where large-scale data processing is expected and matches the array size, apply an optimized loop (`for (let i=0; i<len; i++)` / `while`) with `new Array(size)` memory pre-allocation and direct index loading (`arr[i] = val`). Use `.push()` only for small/variable-length arrays.
+## 1. Coding Standards Apply to Tests
+Test code is held to the same standards as `src/`: Zero-Dependency, the ban on
+`any`, the `switch` threshold, the `forEach` ban and the loop/pre-allocation
+rules. They are not restated here — see
+[Coding Standards](coding-standards.md) and
+[Core Architecture & Standards](app-fetch-core.md), which are the single source
+of truth for them.
 
 ---
 
