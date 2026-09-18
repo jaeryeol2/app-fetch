@@ -37,3 +37,11 @@ Thumbs.db
 .env.*.local
 .gemini/
 tmp/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# graft's agent wiring — machine-specific (an absolute path is baked into the
+# helpers), regenerable per developer with `graft init`.
+.claude/helpers/
+.claude/settings.json
