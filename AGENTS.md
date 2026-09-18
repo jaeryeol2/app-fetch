@@ -45,7 +45,7 @@ app-fetch/
 ## Rules (`.agents/rules/`)
 - [Core Architecture & Standards](.agents/rules/app-fetch-core.md): Project overview, tech stack, directory structure, and details of Core Rules 1-8.
 - [Coding Standards](.agents/rules/coding-standards.md): TypeScript/JavaScript coding standards, function declaration style, SonarQube compliance items.
-- [Harness Engineering](.agents/rules/harness-engineering.md): 8 target-environment validation, dynamic/varied scenarios, Fail & Fix History documentation procedure (details of Core Rules 9-10).
+- [Harness Engineering](.agents/rules/harness-engineering.md): The 8 target-environment matrix, mandatory dynamic/random scenario generation, SSR/CSR dual-mode validation, `appFetch.create()` instance isolation, varied body and response formats, failure and error-handling coverage, and the `tests/`-only file location rule (details of Core Rule 9).
 
 ## Skills (`.agents/skills/`)
 - [app-fetch-validate](.agents/skills/app-fetch-validate/SKILL.md): A step-by-step runbook from build → static analysis → 8-environment matrix testing.
