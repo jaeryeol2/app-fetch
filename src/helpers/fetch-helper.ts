@@ -6,6 +6,8 @@
  * @author jaeryeol2
  */
 
+import type { AppFetchData } from '../@types/fetch-type';
+
 /**
  * HTTP 상태 코드를 포함하는 전용 Error 클래스입니다.
  *
@@ -165,25 +167,27 @@ const NOT_MATCHED: unique symbol = Symbol('app-fetch:not-matched');
  *
  * @pattern Strategy Pattern - Content-Type 규격에 대응하는 적합한 바디 파싱 알고리즘을 런타임에 분기 실행
  * @template T JSON 파싱 타입
- * @param {Response} response 파싱할 Response 인스턴스
+ * @param {ArrayBuffer} buffer 이미 읽어들인 응답 본문 버퍼
+ * @param {Headers} headers 응답 헤더 (FormData 재구성에 사용)
  * @param {string} contentType Content-Type 소문자 문자열
- * @returns {Promise<T | Blob | FormData | string | null | typeof NOT_MATCHED>} 파싱된 데이터 또는 NOT_MATCHED
+ * @returns {Promise<AppFetchData<T> | typeof NOT_MATCHED>} 파싱된 데이터 또는 NOT_MATCHED
  */
 const parseBodyByContentType = async <T>(
-  response: Response,
+  buffer: ArrayBuffer,
+  headers: Headers,
   contentType: string,
-): Promise<T | Blob | FormData | string | null | typeof NOT_MATCHED> => {
+): Promise<AppFetchData<T> | typeof NOT_MATCHED> => {
   if (isJsonContentType(contentType)) {
-    return (await response.json()) as T;
+    return JSON.parse(new TextDecoder().decode(buffer)) as T;
   }
   if (isBinaryContentType(contentType)) {
-    return await response.blob();
+    return new Blob([buffer], { type: contentType });
   }
   if (isFormDataContentType(contentType)) {
-    return await response.formData();
+    return await new Response(buffer, { headers }).formData();
   }
   if (isTextContentType(contentType)) {
-    return await response.text();
+    return new TextDecoder().decode(buffer);
   }
   return NOT_MATCHED;
 };
@@ -191,39 +195,44 @@ const parseBodyByContentType = async <T>(
 /**
  * Content-Type 미지정 또는 알 수 없는 형식에 대해 안전하게 Text/Blob 순으로 Fallback 파싱합니다.
  *
- * @param {Response} response 파싱할 Response 인스턴스
- * @returns {Promise<string | Blob | null>} 파싱된 Fallback 데이터
+ * @param {ArrayBuffer} buffer 이미 읽어들인 응답 본문 버퍼
+ * @param {string} contentType Content-Type 소문자 문자열
+ * @returns {string | Blob | null} 파싱된 Fallback 데이터
  */
-const parseFallbackBody = async (
-  response: Response,
-): Promise<string | Blob | null> => {
-  // 각 단계마다 새 clone을 사용합니다. 동일 인스턴스를 재사용하면 text() 시도로 스트림이
-  // 이미 소비되어 blob() 단계가 항상 실패하는 죽은 분기가 됩니다.
+const parseFallbackBody = (
+  buffer: ArrayBuffer,
+  contentType: string,
+): string | Blob | null => {
+  // 이미 메모리에 올라온 버퍼를 대상으로 하므로 두 단계 모두 실제로 시도 가능합니다.
   try {
-    return await response.clone().text();
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
   } catch {
-    // 텍스트 읽기 실패 시 무시하고 바이너리로 진행
+    // 텍스트 디코딩 실패 시 무시하고 바이너리로 진행
   }
 
   try {
-    return await response.clone().blob();
+    return new Blob([buffer], { type: contentType });
   } catch {
     return null;
   }
 };
 
 /**
- * Web Response 객체의 Content-Type 및 응답 상태 코드를 분석하여 적절한 타입으로 데이터를 자동 파싱합니다.
- * JSON 변종, 바이너리 미디어/문서, FormData, Text/XML/Script 등 모든 가용 가능한 Content-Type을 지원합니다.
+ * Response 인스턴스별 파싱 결과를 보관하여 `getData()` 재호출을 허용합니다.
+ * 본문 스트림은 최초 1회만 소비되므로 원본 Response가 미소비 상태로 남지 않습니다.
+ */
+const parsedBodyCache = new WeakMap<Response, Promise<unknown>>();
+
+/**
+ * 응답 본문을 정확히 한 번 읽어 메모리에 적재한 뒤 Content-Type에 맞게 파싱합니다.
  *
  * @template T JSON 파싱 시 기대되는 반환 타입
  * @param {Response} response 파싱할 Web Response 인스턴스
- * @returns {Promise<T | Blob | FormData | string | null>} 파싱된 응답 데이터 Promise
- * @author jaeryeol2
+ * @returns {Promise<AppFetchData<T>>} 파싱된 응답 데이터
  */
-export const getData = async <T = unknown>(
+const parseResponseOnce = async <T>(
   response: Response,
-): Promise<T | Blob | FormData | string | null> => {
+): Promise<AppFetchData<T>> => {
   if (isEmptyResponseBody(response)) {
     return null;
   }
@@ -232,9 +241,14 @@ export const getData = async <T = unknown>(
     response.headers.get('content-type') || ''
   ).toLowerCase();
 
+  // clone 대신 원본 스트림을 소비합니다. clone만 읽으면 원본 본문이 해제되지 않아
+  // 연결이 풀로 회수되지 않고 버퍼가 남습니다.
+  const buffer = await response.arrayBuffer();
+
   try {
     const parsedData = await parseBodyByContentType<T>(
-      response.clone(),
+      buffer,
+      response.headers,
       contentType,
     );
     if (parsedData !== NOT_MATCHED) {
@@ -244,5 +258,36 @@ export const getData = async <T = unknown>(
     console.error('Content parsing failed, executing fallback.', error);
   }
 
-  return parseFallbackBody(response);
+  return parseFallbackBody(buffer, contentType);
+};
+
+/**
+ * Web Response 객체의 Content-Type 및 응답 상태 코드를 분석하여 적절한 타입으로 데이터를 자동 파싱합니다.
+ * JSON 변종, 바이너리 미디어/문서, FormData, Text/XML/Script 등 모든 가용 가능한 Content-Type을 지원합니다.
+ *
+ * @template T JSON 파싱 시 기대되는 반환 타입
+ * @param {Response} response 파싱할 Web Response 인스턴스
+ * @returns {Promise<AppFetchData<T>>} 파싱된 응답 데이터 Promise
+ * @author jaeryeol2
+ */
+export const getData = <T = unknown>(
+  response: Response,
+): Promise<AppFetchData<T>> => {
+  const cached = parsedBodyCache.get(response);
+  if (cached) {
+    return cached as Promise<AppFetchData<T>>;
+  }
+
+  const parsing = parseResponseOnce<T>(response);
+  parsedBodyCache.set(response, parsing);
+
+  // 실패한 Promise가 캐시에 남으면 이후 재호출이 영구히 같은 에러로 실패합니다.
+  // 그 사이 다른 호출이 캐시를 덮어썼을 수 있으므로 동일 참조일 때만 제거합니다.
+  parsing.catch(() => {
+    if (parsedBodyCache.get(response) === parsing) {
+      parsedBodyCache.delete(response);
+    }
+  });
+
+  return parsing;
 };

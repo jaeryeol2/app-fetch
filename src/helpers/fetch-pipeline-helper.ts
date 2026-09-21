@@ -190,11 +190,11 @@ export const setupRequestBody = (
     'body' in options &&
     options.body !== undefined &&
     options.body !== null;
-  const isBodyMethod =
-    methodLower === 'post' || methodLower === 'put' || methodLower === 'patch';
+  // 본문이 금지되는 것은 GET/HEAD뿐입니다. DELETE는 본문을 가질 수 있으므로 제외하지 않습니다.
+  const isNoBodyMethod = methodLower === 'get' || methodLower === 'head';
 
-  if (!hasBody || !isBodyMethod) {
-    // 스프레드로 이미 복사된 raw body를 제거합니다. 남겨두면 GET/DELETE 요청에서
+  if (!hasBody || isNoBodyMethod) {
+    // 스프레드로 이미 복사된 raw body를 제거합니다. 남겨두면 GET/HEAD 요청에서
     // 네이티브 fetch가 'Request with GET/HEAD method cannot have body' TypeError를 던집니다.
     delete mergeOptions.body;
     return;
@@ -229,16 +229,18 @@ export const setupRequestBody = (
 export const resolveAbortSignal = (
   customSignal?: AbortSignal | null,
   timeoutSignal?: AbortSignal,
-): AbortSignal | undefined => {
+): { signal: AbortSignal | undefined; dispose: () => void } => {
+  const noop = () => {};
+
   if (!customSignal) {
-    return timeoutSignal;
+    return { signal: timeoutSignal, dispose: noop };
   }
   if (!timeoutSignal) {
-    return customSignal;
+    return { signal: customSignal, dispose: noop };
   }
 
   if ('any' in AbortSignal && typeof AbortSignal.any === 'function') {
-    return AbortSignal.any([customSignal, timeoutSignal]);
+    return { signal: AbortSignal.any([customSignal, timeoutSignal]), dispose: noop };
   }
 
   const combinedController = new AbortController();
@@ -246,12 +248,21 @@ export const resolveAbortSignal = (
 
   if (customSignal.aborted || timeoutSignal.aborted) {
     combinedController.abort();
-  } else {
-    customSignal.addEventListener('abort', onAbort, { once: true });
-    timeoutSignal.addEventListener('abort', onAbort, { once: true });
+    return { signal: combinedController.signal, dispose: noop };
   }
 
-  return combinedController.signal;
+  customSignal.addEventListener('abort', onAbort, { once: true });
+  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+
+  // 요청이 끝나면 반드시 호출되어야 합니다. 호출하지 않으면 수명주기가 긴 사용자 signal에
+  // 리스너가 요청 횟수만큼 누적됩니다. 해제 이후에는 타임아웃 타이머와 동일하게
+  // 이 요청에 대한 abort 전파가 종료됩니다.
+  const dispose = () => {
+    customSignal.removeEventListener('abort', onAbort);
+    timeoutSignal.removeEventListener('abort', onAbort);
+  };
+
+  return { signal: combinedController.signal, dispose };
 };
 
 /**
@@ -354,13 +365,14 @@ const computeRetryDecision = async (
  *
  * @param {AppFetchOptions} [options] 사용자 요청 옵션
  * @param {(base?: HeadersInit, custom?: HeadersInit) => Headers} mergeHeaders 헤더 병합 헬퍼
- * @returns {Promise<{ mergeOptions: RequestInit; abortController: AbortController }>}
+ * @param {AbortController} abortController 타임아웃용 AbortController
+ * @returns {Promise<{ mergeOptions: RequestInit; disposeSignal: () => void }>} 요청 옵션과 시그널 해제 함수
  */
 export const buildRequestInit = async (
   options: AppFetchOptions | undefined,
   mergeHeaders: (base?: HeadersInit, custom?: HeadersInit) => Headers,
   abortController: AbortController,
-): Promise<RequestInit> => {
+): Promise<{ mergeOptions: RequestInit; disposeSignal: () => void }> => {
   const mergeOptions: RequestInit = {
     ...options,
     baseURL: undefined,
@@ -377,18 +389,21 @@ export const buildRequestInit = async (
   mergeOptions.headers = mergeHeaders(options?.headers);
 
   setupRequestBody(mergeOptions, options);
-  mergeOptions.signal = resolveAbortSignal(
+
+  const { signal, dispose } = resolveAbortSignal(
     options?.signal,
     abortController.signal,
   );
+  mergeOptions.signal = signal;
 
-  await beforeRequestHandler(
-    mergeOptions,
-    options?.beforeRequest,
-    mergeOptions.signal as AbortSignal,
-  );
+  try {
+    await beforeRequestHandler(mergeOptions, options?.beforeRequest, signal);
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 
-  return mergeOptions;
+  return { mergeOptions, disposeSignal: dispose };
 };
 
 /**
@@ -418,8 +433,9 @@ export const handleRetryOrReturnResponse = async (
     Boolean(options?.retryStrategy) || (options?.retry ?? 0) > 0;
 
   if (canRetry) {
+    const retryClone = response.clone();
     const retryContext: RetryContext = {
-      response: response.clone(),
+      response: retryClone,
       attempt: attemptCount,
       maxRetries: options?.retry ?? 0,
     };
@@ -435,6 +451,15 @@ export const handleRetryOrReturnResponse = async (
         await sleep(retryDecision.delay);
       }
       return await fetchExecutor(path, options, attemptCount + 1);
+    }
+
+    // 재시도하지 않기로 했으면 판정용 clone은 더 이상 쓰이지 않습니다.
+    // 읽지 않은 채 두면 tee된 버퍼가 GC 시점까지 남으므로 즉시 해제합니다.
+    //
+    // await하면 안 됩니다. tee된 스트림의 cancel()은 양쪽 분기가 모두 취소되어야
+    // resolve되는데, 원본 분기는 사용자가 getData()로 읽을 대상이라 취소되지 않습니다.
+    if (!retryClone.bodyUsed) {
+      void retryClone.body?.cancel().catch(() => undefined);
     }
   }
 

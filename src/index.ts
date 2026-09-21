@@ -8,6 +8,7 @@
 
 import type {
   FlatQueryFunctionType,
+  AppFetchInstance,
   AppFetchOptions,
   AppFetchPromise,
   AppFetchResponse,
@@ -35,7 +36,11 @@ const CIRCULAR_REFERENCE_MESSAGE =
  * @returns {unknown[]} 순회 대상 값 배열
  */
 const getIterableEntries = (value: object): unknown[] => {
-  if (value instanceof Map || value instanceof Set) {
+  // Map은 키 쪽에도 순환 참조가 존재할 수 있으므로 키와 값을 모두 순회 대상에 포함합니다.
+  if (value instanceof Map) {
+    return [...value.keys(), ...value.values()];
+  }
+  if (value instanceof Set) {
     return Array.from(value.values());
   }
   return Object.values(value);
@@ -82,6 +87,58 @@ const hasCircularReference = (
  * @returns {string | null} 직렬화된 문자열 또는 실패 시 null
  * @throws {Error} 순환 참조 감지 시 예외 발생
  */
+/**
+ * Map/Set/Date/RegExp를 JSON 직렬화 가능한 형태로 재귀 변환합니다.
+ * `JSON.stringify`는 Map/Set을 빈 객체(`{}`)로 치환하므로, 최상위뿐 아니라
+ * 중첩된 위치의 Map/Set까지 미리 배열로 펼쳐야 데이터가 유실되지 않습니다.
+ *
+ * 순환 참조는 이 함수 호출 전에 `hasCircularReference`로 차단되므로 무한 재귀는 발생하지 않습니다.
+ *
+ * @param {unknown} value 변환할 값
+ * @returns {unknown} JSON 직렬화 가능한 값
+ */
+const toSerializable = (value: unknown): unknown => {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  // TypedArray/ArrayBuffer는 JSON.stringify 기본 동작에 맡깁니다.
+  // 여기서 분해하면 원소 수만큼 중간 배열이 생겨 비용만 커집니다.
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    return value;
+  }
+
+  // toJSON을 구현한 값(Date, Dayjs, Decimal 등)은 그 의도를 최우선으로 존중합니다.
+  // 반환값이 다시 Map/Date 등을 품을 수 있으므로 재귀로 한 번 더 정규화합니다.
+  const serializable = value as { toJSON?: () => unknown };
+  if (typeof serializable.toJSON === 'function') {
+    const converted = serializable.toJSON();
+    if (converted !== value) {
+      return toSerializable(converted);
+    }
+  }
+
+  if (value instanceof RegExp) {
+    return value.toString();
+  }
+  if (value instanceof Map) {
+    return Array.from(value.entries(), ([key, item]) => [
+      toSerializable(key),
+      toSerializable(item),
+    ]);
+  }
+  if (value instanceof Set) {
+    return Array.from(value, (item) => toSerializable(item));
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => toSerializable(item));
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, toSerializable(item)]),
+  );
+};
+
 const stringifyOrThrowCircular = (
   value: unknown,
   seen: WeakSet<object>,
@@ -91,7 +148,7 @@ const stringifyOrThrowCircular = (
   }
 
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(toSerializable(value));
   } catch {
     return null;
   }
@@ -101,12 +158,6 @@ const stringifySpecialObject = (
   value: object,
   seen: WeakSet<object>,
 ): string | null => {
-  if (value instanceof Map) {
-    return stringifyOrThrowCircular(Array.from(value.entries()), seen);
-  }
-  if (value instanceof Set) {
-    return stringifyOrThrowCircular(Array.from(value), seen);
-  }
   if (value instanceof RegExp) {
     return value.toString();
   }
@@ -329,7 +380,9 @@ const resolveBaseURL = (baseURL?: string): string => {
  * @returns {string} 조합된 기본 경로
  */
 const buildBasePath = (path: string, options?: AppFetchOptions): string => {
-  if (/^https?:\/\//i.test(path)) {
+  // 스킴이 명시된 절대 URL은 그대로 사용합니다. http/https뿐 아니라 blob:, data:,
+  // file: 등도 포함해야 브라우저에서 Blob/DataURL 페치가 baseURL에 오염되지 않습니다.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) {
     return path;
   }
 
@@ -368,8 +421,17 @@ const getURL = (path: string, options?: AppFetchOptions): string => {
     return baseUrl;
   }
 
-  const separator = baseUrl.includes('?') ? '&' : '?';
-  return `${baseUrl}${separator}${qString}`;
+  // 프래그먼트(#) 이후는 서버로 전송되지 않으므로, 쿼리는 반드시 # 앞에 붙여야 합니다.
+  const hashIndex = baseUrl.indexOf('#');
+  if (hashIndex === -1) {
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${separator}${qString}`;
+  }
+
+  const head = baseUrl.slice(0, hashIndex);
+  const fragment = baseUrl.slice(hashIndex);
+  const separator = head.includes('?') ? '&' : '?';
+  return `${head}${separator}${qString}${fragment}`;
 };
 
 /**
@@ -410,7 +472,15 @@ const fetchData = (
   const promise = (async (): Promise<AppFetchResponse> => {
     let requestTimer: ReturnType<typeof setTimeout> | null = null;
     let isTimedOut = false;
+    let disposeSignal: (() => void) | null = null;
     const abortController = new AbortController();
+
+    // 재시도는 재귀 호출이므로, finally만 믿으면 전체 체인이 끝날 때까지 이전 시도들의
+    // 리스너가 함께 살아남습니다. 재귀 직전에 먼저 해제하고 finally는 안전망으로 둡니다.
+    const releaseSignal = () => {
+      disposeSignal?.();
+      disposeSignal = null;
+    };
 
     try {
       const timeoutMs = options?.timeout ?? 3000;
@@ -422,11 +492,13 @@ const fetchData = (
             }, timeoutMs)
           : null;
 
-      const mergeOptions = await buildRequestInit(
+      const built = await buildRequestInit(
         options,
         mergeHeaders,
         abortController,
       );
+      const mergeOptions = built.mergeOptions;
+      disposeSignal = built.disposeSignal;
       const url = getURL(path, options);
 
       const response = await fetch(url, mergeOptions);
@@ -434,6 +506,7 @@ const fetchData = (
       if (requestTimer) {
         clearTimeout(requestTimer);
       }
+      releaseSignal();
 
       return await handleRetryOrReturnResponse(
         response,
@@ -446,6 +519,7 @@ const fetchData = (
       if (requestTimer) {
         clearTimeout(requestTimer);
       }
+      releaseSignal();
 
       return await handleFetchError(
         error,
@@ -455,6 +529,9 @@ const fetchData = (
         attemptCount,
         fetchData,
       );
+    } finally {
+      // 안전망: 위 경로에서 해제되지 않은 경우에만 동작합니다(해제는 멱등).
+      releaseSignal();
     }
   })();
 
@@ -477,9 +554,16 @@ const omitUndefined = <T extends object>(source?: T): Partial<T> => {
     return {};
   }
 
-  return Object.fromEntries(
-    Object.entries(source).filter(([, value]) => value !== undefined),
-  ) as Partial<T>;
+  // Reflect.ownKeys를 쓰면 Symbol 키(런타임별 확장 옵션)까지 보존됩니다.
+  const copy: Record<string | symbol, unknown> = {};
+  const record = source as Record<string | symbol, unknown>;
+  for (const key of Reflect.ownKeys(source)) {
+    if (record[key] !== undefined) {
+      copy[key] = record[key];
+    }
+  }
+
+  return copy as Partial<T>;
 };
 
 /**
@@ -492,8 +576,11 @@ const omitUndefined = <T extends object>(source?: T): Partial<T> => {
  */
 const create = (
   defaults: Omit<AppFetchOptions, 'method' | 'query' | 'body'>,
-) => {
-  return (path: string, options?: AppFetchOptions): AppFetchPromise => {
+): AppFetchInstance => {
+  const instance = (
+    path: string,
+    options?: AppFetchOptions,
+  ): AppFetchPromise => {
     const mergeOptions = {
       ...defaults,
       ...omitUndefined(options),
@@ -511,6 +598,27 @@ const create = (
 
     return fetchData(path, mergeOptions);
   };
+
+  // 파생 인스턴스도 다시 파생할 수 있도록 create를 부여하고, 상위 기본 설정을 누적 상속합니다.
+  return Object.assign(instance, {
+    create: (
+      nextDefaults: Omit<AppFetchOptions, 'method' | 'query' | 'body'>,
+    ): AppFetchInstance =>
+      create({
+        ...defaults,
+        ...omitUndefined(nextDefaults),
+        headers: mergeHeaders(defaults.headers, nextDefaults.headers),
+        beforeRequest: composeInterceptors(
+          defaults.beforeRequest,
+          nextDefaults.beforeRequest,
+        ),
+        afterResponse: composeInterceptors(
+          defaults.afterResponse,
+          nextDefaults.afterResponse,
+        ),
+        onError: composeInterceptors(defaults.onError, nextDefaults.onError),
+      }),
+  });
 };
 
 /**
@@ -531,6 +639,7 @@ export type {
   RetryStrategy,
   RetryStrategyFunction,
   RetryStrategyObject,
+  AppFetchData,
   AppFetchInstance,
   AppFetchOptions,
   AppFetchPromise,

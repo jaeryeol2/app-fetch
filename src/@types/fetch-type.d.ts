@@ -35,7 +35,13 @@ export interface RetryStrategyObject {
 export type RetryStrategy = RetryStrategyFunction | RetryStrategyObject;
 
 export type HttpNoBodyMethod = 'get' | 'delete';
-export type HttpBodyMethod = 'post' | 'put' | 'patch';
+/**
+ * 본문 전송이 허용되는 메서드입니다. RFC 9110 기준 본문이 금지되는 것은 GET/HEAD뿐이며
+ * DELETE는 본문을 가질 수 있으므로(대량 삭제 API 등) 포함합니다.
+ * `HttpNoBodyMethod`와 'delete'가 겹치는 것은 의도된 것으로, 본문 없는 DELETE 호출의
+ * 기존 타입 호환성을 유지하기 위함입니다.
+ */
+export type HttpBodyMethod = 'post' | 'put' | 'patch' | 'delete';
 export type HttpMethod = HttpNoBodyMethod | HttpBodyMethod;
 
 export interface BaseFetchOptions
@@ -79,12 +85,19 @@ export type FlatQueryFunctionType = (
   seen?: WeakSet<object>,
 ) => string[];
 
+/**
+ * getData가 Content-Type에 따라 반환할 수 있는 파싱 결과 유니온입니다.
+ * JSON은 제네릭 `T`, 바이너리는 `Blob`, 멀티파트는 `FormData`, 텍스트 계열은 `string`,
+ * 빈 응답(204/205 등)은 `null`로 파싱됩니다.
+ */
+export type AppFetchData<T = unknown> = T | Blob | FormData | string | null;
+
 export interface AppFetchResponse extends Response {
-  getData: <T = unknown>() => Promise<T | Blob | FormData | string | null>;
+  getData: <T = unknown>() => Promise<AppFetchData<T>>;
 }
 
 export interface AppFetchPromise extends Promise<AppFetchResponse> {
-  getData: <T = unknown>() => Promise<T | Blob | FormData | string | null>;
+  getData: <T = unknown>() => Promise<AppFetchData<T>>;
 }
 
 export type AppFetchInstance = ((
@@ -93,5 +106,5 @@ export type AppFetchInstance = ((
 ) => AppFetchPromise) & {
   create?: (
     defaults: Omit<AppFetchOptions, 'method' | 'query' | 'body'>,
-  ) => (path: string, options?: AppFetchOptions) => AppFetchPromise;
+  ) => AppFetchInstance;
 };

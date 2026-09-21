@@ -127,7 +127,8 @@ const products = await getData(response);
 
 - **Headers 병합 (`mergeHeaders`)**: `defaults.headers`와 호출 시 전달된 `options.headers`는 네이티브 `Headers` 객체 속성을 유지하며 안전하게 `set()` 처리됩니다.
 - **Interceptors 체이닝 (`composeInterceptors`)**: `beforeRequest`, `afterResponse`, `onError` 인터셉터는 기본 설정에 정의된 인터셉터 뒤에 개별 호출 시 넘긴 인터셉터가 순차적으로 결합되어 순서대로 실행됩니다.
-- **옵션 덮어쓰기**: `timeout`, `retry`, `delay` 등 일반 값은 호출 시 전달된 개별 옵션이 기본값을 덮어씁니다.
+- **옵션 덮어쓰기**: `timeout`, `retry`, `delay` 등 일반 값은 호출 시 전달된 개별 옵션이 기본값을 덮어씁니다. 단, **값이 `undefined`인 키는 덮어쓰기 대상에서 제외**되어 기본 설정이 유지됩니다.
+- **인스턴스 재파생**: 생성된 인스턴스도 `.create()`를 가지므로, 상위 설정을 누적 상속한 하위 인스턴스를 계속 파생시킬 수 있습니다.
 
 #### 🏢 멀티 테넌트 / 마이크로서비스별 인스턴스 분리
 
@@ -210,7 +211,7 @@ const response3 = await appFetch('https://api.example.com/custom', {
 - **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다.
 - **사용자 요청 취소(`signal.abort()`) 시 즉시 중단:** 사용자가 전달한 `AbortSignal`이 취소(`aborted: true`)되면 남아있는 재시도 카운트와 무관하게 모든 재시도가 즉시 중단되고 `AbortError`를 발생시켜 불필요한 중복 트래픽을 방지합니다.
 - **요청 바디가 `ReadableStream`인 경우 재시도가 자동으로 차단됩니다.** 스트림은 한 번 소비되면 다시 읽을 수 없어(1회성 소비), 동일한 스트림으로 재시도를 시도하면 두 번째 요청이 반드시 실패합니다. `app-fetch`는 이런 상황에서 `retry`/`retryStrategy` 설정과 무관하게 재시도를 건너뛰고 최초 응답/에러를 그대로 반환하며, 콘솔에 `console.warn`으로 원인을 안내합니다. 스트리밍 업로드에서 재시도가 필요하다면 `Blob`, `ArrayBuffer`, `string`, `FormData`처럼 재사용 가능한 바디 타입을 사용해 주세요.
-- **안전 하드캡(Hard Cap):** 재시도는 최대 10회로 제한되며, 10회 도달 시 무한 루프를 방지하기 위해 경고(`console.warn`)와 함께 재시도를 종료합니다.
+- **안전 하드캡(Hard Cap):** 무한 루프 방지를 위해 **한 요청의 총 시도 횟수는 10회를 넘지 않습니다**(= 최초 1회 + 재시도 최대 9회). 따라서 `retry: 10` 이상을 지정하더라도 10번째 시도에서 경고(`console.warn`)와 함께 재시도가 종료되며, 설정한 횟수가 그대로 반영되지 않습니다.
 
 ### 5. 응답 파싱 및 지원 포맷 (`getData`, `HttpError`, `returnError`)
 
@@ -242,7 +243,24 @@ try {
 | **FormData** | `multipart/*`, `application/x-www-form-urlencoded` | `FormData` | `await response.formData()` 자동 파싱 |
 | **텍스트 / 스크립트** | `text/*`, `application/xml`, `text/xml`, `application/javascript`, `text/javascript`, `application/typescript`, `application/yaml`, `application/graphql` | `string` | `await response.text()` 자동 파싱 |
 | **Empty Body** | 상태코드 `204 No Content`, `205 Reset Content`, 헤더 `Content-Length: 0` | `null` | 바디가 없는 응답에 대해 `null` 반환 |
-| **Fallback** | Content-Type 미지정 또는 알 수 없는 형식 | `string \| Blob \| null` | `text()` 시도 후 실패 시 `blob()` 순차적 Fallback |
+| **Fallback** | Content-Type 미지정 또는 알 수 없는 형식 | `string \| Blob \| null` | 텍스트 디코딩 시도 후 실패 시 `Blob` 순차적 Fallback |
+
+#### ⚠️ `getData`의 본문 소비 방식 (Body Consumption)
+
+- **`getData()`는 응답 본문 스트림을 정확히 한 번만 소비합니다.** 호출 이후 `response.bodyUsed`는 `true`가 되며, 이는 HTTP 연결이 커넥션 풀로 즉시 회수되도록 하기 위함입니다.
+- **파싱 결과는 응답 인스턴스별로 캐시되므로 `getData()`를 여러 번 호출해도 동일한 값이 반환됩니다.** 파싱이 실패한 경우에는 캐시가 제거되어 재호출로 다시 시도할 수 있습니다.
+- **단, `getData()` 호출 이후에는 `response.body`, `response.json()`, `response.clone()` 등 원본 스트림에 직접 접근하는 API를 사용할 수 없습니다.** 원본 스트림을 직접 다루어야 한다면(예: 대용량 다운로드 진행률 표시, SSE 수신) `getData()`를 호출하지 말고 `response.body`를 바로 사용하세요.
+
+```ts
+// ✅ 파싱 결과가 필요한 일반적인 경우
+const res = await appFetch('/api/users');
+const users = await res.getData<User[]>();
+await res.getData<User[]>(); // 캐시된 동일 값 반환
+
+// ✅ 스트리밍이 필요한 경우 — getData()를 호출하지 않는다
+const stream = await appFetch('/api/large-file');
+const reader = stream.body?.getReader();
+```
 
 ---
 
@@ -362,18 +380,27 @@ export const sampleFetch = Object.assign(wrap, { native });
 | 함수 / 메서드 | 파라미터 | 반환 타입 | 설명 |
 | :--- | :--- | :--- | :--- |
 | **`appFetch(path, options)`** | `path: string`, `options?: AppFetchOptions` | `AppFetchPromise` | HTTP 요청을 수행하며, `await appFetch(...).getData()` 체이닝 및 `res.getData()`를 지원하는 확장 Promise를 반환합니다. |
-| **`appFetch.create(defaults)`** | `defaults: Omit<AppFetchOptions, 'method' \| 'query' \| 'body'>` | `(path: string, options?: AppFetchOptions) => AppFetchPromise` | 공통 `baseURL`, 기본 헤더, 타임아웃, 인터셉터가 캡슐화된 커스텀 클라이언트 인스턴스 함수를 생성합니다. |
+| **`appFetch.create(defaults)`** | `defaults: Omit<AppFetchOptions, 'method' \| 'query' \| 'body'>` | `AppFetchInstance` | 공통 `baseURL`, 기본 헤더, 타임아웃, 인터셉터가 캡슐화된 커스텀 클라이언트 인스턴스를 생성합니다. 생성된 인스턴스도 `.create()`를 가지므로, 상위 기본 설정을 누적 상속한 하위 인스턴스를 계속 파생시킬 수 있습니다. |
+
+#### 🔗 인스턴스 파생 및 옵션 병합 규칙
+
+- **`create()`로 만든 인스턴스는 다시 `.create()`로 파생할 수 있습니다.** 파생 시 상위 `baseURL`/헤더/인터셉터가 누적 상속되며, 같은 키는 하위 설정이 우선합니다.
+- **호출 시 전달한 `undefined` 값은 기본 설정을 덮어쓰지 않습니다.** 예를 들어 `api('/x', { timeout: config.timeout })`에서 `config.timeout`이 비어 있어도 인스턴스의 `timeout` 기본값이 그대로 유지됩니다.
 
 ### `AppFetchOptions` (Discriminated Union)
 
-`AppFetchOptions`는 TypeScript의 **Discriminated Union**으로 구성되어 있어, `GET/DELETE` 및 `POST/PUT/PATCH` 메서드 모두에서 `query` 파라미터를 자유롭게 전달할 수 있으며, `body` 옵션은 `POST/PUT/PATCH` 메서드에서 안전하게 허용됩니다.
+`AppFetchOptions`는 TypeScript의 **Discriminated Union**으로 구성되어 있어, 모든 메서드에서 `query` 파라미터를 자유롭게 전달할 수 있으며, `body` 옵션은 `POST/PUT/PATCH/DELETE` 메서드에서 안전하게 허용됩니다.
+
+- **본문이 허용되지 않는 메서드는 `GET`/`HEAD`뿐입니다.** RFC 9110에 따라 `DELETE`는 본문을 가질 수 있으므로(대량 삭제 API 등) `POST`와 동일하게 직렬화됩니다. `GET`/`HEAD`에 전달된 `body`는 네이티브 `fetch`의 `TypeError`를 막기 위해 조용히 제거됩니다.
+- **`body`가 `FormData`이면 `Content-Type` 헤더가 자동으로 제거됩니다.** 멀티파트 `boundary`는 런타임이 직접 생성해야 하므로, 인스턴스 기본 헤더 등에 `application/json`이 설정되어 있어도 업로드가 깨지지 않습니다.
+- **스킴이 명시된 절대 URL(`https:`, `blob:`, `data:` 등)은 `baseURL`과 결합하지 않고 그대로 사용됩니다.** 반대로 `//`로 시작하는 경로는 `baseURL`이 설정된 경우 그 하위 상대 경로로 정규화되어, 사용자 입력으로 조립된 경로가 인증 헤더를 실은 채 외부 호스트로 나가는 것을 방지합니다.
 
 | 옵션명 | 타입 | 기본값 | 설명 |
 | :--- | :--- | :---: | :--- |
 | `baseURL` | `string` | `undefined` | 모든 상대 경로에 결합될 기본 URL |
-| `method` | `'get' \| 'delete' \| 'post' \| 'put' \| 'patch'` | `'get'` | HTTP 메서드 |
+| `method` | `'get' | 'delete' | 'post' | 'put' | 'patch'` | `'get'` | HTTP 메서드 || 'delete' \| 'post' \| 'put' \| 'patch'` | `'get'` | HTTP 메서드 |
 | `query` | `Record<string, unknown> \| object` | `undefined` | 모든 HTTP 요청 시 URL 쿼리 스트링으로 직렬화할 파라미터 객체 (중첩 객체/배열/Map/Set/Date 지원) |
-| `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH 요청 시 전송할 바디 (Object는 자동 JSON 직렬화) |
+| `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH / DELETE 요청 시 전송할 바디 (Object는 자동 JSON 직렬화, GET / HEAD에서는 제거됨) |
 | `headers` | `HeadersInit` | `undefined` | 요청 헤더 (`mergeHeaders`를 통해 네이티브 Headers 속성 유지) |
 | `timeout` | `number` | `3000` | 각 시도당(per-attempt) 요청 타임아웃 (ms) |
 | `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 |
