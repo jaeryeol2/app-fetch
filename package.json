@@ -1,6 +1,6 @@
 {
   "name": "app-fetch",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "custom fetch library",
   "license": "MIT",
   "author": "jaeryeol2",
