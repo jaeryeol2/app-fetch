@@ -194,12 +194,21 @@ export const setupRequestBody = (
     methodLower === 'post' || methodLower === 'put' || methodLower === 'patch';
 
   if (!hasBody || !isBodyMethod) {
+    // 스프레드로 이미 복사된 raw body를 제거합니다. 남겨두면 GET/DELETE 요청에서
+    // 네이티브 fetch가 'Request with GET/HEAD method cannot have body' TypeError를 던집니다.
+    delete mergeOptions.body;
     return;
   }
 
   const body = options.body;
   if (isNativeBody(body)) {
     mergeOptions.body = body as BodyInit;
+
+    // FormData는 네이티브 fetch가 boundary를 포함한 Content-Type을 직접 생성해야 하므로,
+    // 기본 헤더 등으로 미리 설정된 Content-Type이 남아 있으면 제거합니다.
+    if (body instanceof FormData) {
+      (mergeOptions.headers as Headers).delete('Content-Type');
+    }
   } else {
     const headers = mergeOptions.headers as Headers;
     if (!headers.has('Content-Type')) {
@@ -344,13 +353,11 @@ const computeRetryDecision = async (
  * fetch 요청에 필요한 RequestInit 옵션과 AbortController를 생성 및 준비합니다.
  *
  * @param {AppFetchOptions} [options] 사용자 요청 옵션
- * @param {number} attemptCount 현재 시도 횟수
  * @param {(base?: HeadersInit, custom?: HeadersInit) => Headers} mergeHeaders 헤더 병합 헬퍼
  * @returns {Promise<{ mergeOptions: RequestInit; abortController: AbortController }>}
  */
 export const buildRequestInit = async (
   options: AppFetchOptions | undefined,
-  attemptCount: number,
   mergeHeaders: (base?: HeadersInit, custom?: HeadersInit) => Headers,
   abortController: AbortController,
 ): Promise<RequestInit> => {
@@ -405,23 +412,30 @@ export const handleRetryOrReturnResponse = async (
     attemptCount?: number,
   ) => Promise<AppFetchResponse>,
 ): Promise<AppFetchResponse> => {
-  const retryContext: RetryContext = {
-    response: response.clone(),
-    attempt: attemptCount,
-    maxRetries: options?.retry ?? 0,
-  };
+  // 재시도 설정이 전혀 없으면 재시도 판정 자체가 불필요합니다. 이 경우 clone을 만들지 않아
+  // 아무도 소비하지 않는 복제 스트림이 매 요청마다 버퍼를 점유하는 것을 방지합니다.
+  const canRetry =
+    Boolean(options?.retryStrategy) || (options?.retry ?? 0) > 0;
 
-  const retryDecision = await evaluateRetryStrategy(
-    retryContext,
-    options?.retryStrategy,
-    options,
-  );
+  if (canRetry) {
+    const retryContext: RetryContext = {
+      response: response.clone(),
+      attempt: attemptCount,
+      maxRetries: options?.retry ?? 0,
+    };
 
-  if (retryDecision.shouldRetry) {
-    if (retryDecision.delay > 0) {
-      await sleep(retryDecision.delay);
+    const retryDecision = await evaluateRetryStrategy(
+      retryContext,
+      options?.retryStrategy,
+      options,
+    );
+
+    if (retryDecision.shouldRetry) {
+      if (retryDecision.delay > 0) {
+        await sleep(retryDecision.delay);
+      }
+      return await fetchExecutor(path, options, attemptCount + 1);
     }
-    return await fetchExecutor(path, options, attemptCount + 1);
   }
 
   await afterResponseHandler(response, options?.afterResponse);

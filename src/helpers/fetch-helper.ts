@@ -197,14 +197,16 @@ const parseBodyByContentType = async <T>(
 const parseFallbackBody = async (
   response: Response,
 ): Promise<string | Blob | null> => {
+  // 각 단계마다 새 clone을 사용합니다. 동일 인스턴스를 재사용하면 text() 시도로 스트림이
+  // 이미 소비되어 blob() 단계가 항상 실패하는 죽은 분기가 됩니다.
   try {
-    return await response.text();
+    return await response.clone().text();
   } catch {
     // 텍스트 읽기 실패 시 무시하고 바이너리로 진행
   }
 
   try {
-    return await response.blob();
+    return await response.clone().blob();
   } catch {
     return null;
   }
@@ -242,5 +244,5 @@ export const getData = async <T = unknown>(
     console.error('Content parsing failed, executing fallback.', error);
   }
 
-  return parseFallbackBody(response.clone());
+  return parseFallbackBody(response);
 };

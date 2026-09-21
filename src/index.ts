@@ -329,12 +329,22 @@ const resolveBaseURL = (baseURL?: string): string => {
  * @returns {string} 조합된 기본 경로
  */
 const buildBasePath = (path: string, options?: AppFetchOptions): string => {
-  if (/^(?:https?:)?\/\//i.test(path)) {
+  if (/^https?:\/\//i.test(path)) {
     return path;
   }
 
   const cleanBase = resolveBaseURL(options?.baseURL);
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  // '//host/path' 형태는 baseURL이 지정되지 않은 경우에만 프로토콜 상대 URL로 인정합니다.
+  // baseURL이 있는데도 이를 절대 URL로 취급하면, 사용자 입력으로 조립된 경로가
+  // baseURL을 우회하여 외부 호스트로 인증 헤더와 함께 전송될 수 있습니다.
+  if (path.startsWith('//') && !cleanBase) {
+    return path;
+  }
+
+  const normalizedPath = path.startsWith('/')
+    ? path.replace(/^\/+/, '/')
+    : `/${path}`;
   return cleanBase ? `${cleanBase}${normalizedPath}` : normalizedPath;
 };
 
@@ -414,7 +424,6 @@ const fetchData = (
 
       const mergeOptions = await buildRequestInit(
         options,
-        attemptCount,
         mergeHeaders,
         abortController,
       );
@@ -455,6 +464,25 @@ const fetchData = (
 };
 
 /**
+ * 값이 `undefined`인 키를 제거한 얕은 복사본을 반환합니다.
+ * 스프레드 병합에서 호출측이 전달한 `undefined`(예: `{ timeout: config.timeout }`의
+ * config.timeout이 비어 있는 경우)가 기본 설정값을 덮어써 지우는 것을 방지합니다.
+ *
+ * @template T 원본 객체 타입
+ * @param {T} [source] 정리할 객체
+ * @returns {Partial<T>} undefined 키가 제거된 얕은 복사본
+ */
+const omitUndefined = <T extends object>(source?: T): Partial<T> => {
+  if (!source) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(source).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+};
+
+/**
  * 기본 설정(baseURL, headers, timeout, 인터셉터 등)이 캡슐화된 커스텀 appFetch 클라이언트 인스턴스를 생성합니다.
  *
  * @pattern Factory Pattern - 기본 설정 및 인터셉터를 캡슐화한 독립 인스턴스를 생성
@@ -468,7 +496,7 @@ const create = (
   return (path: string, options?: AppFetchOptions): AppFetchPromise => {
     const mergeOptions = {
       ...defaults,
-      ...options,
+      ...omitUndefined(options),
       headers: mergeHeaders(defaults.headers, options?.headers),
       beforeRequest: composeInterceptors(
         defaults.beforeRequest,
