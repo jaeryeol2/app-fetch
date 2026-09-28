@@ -485,8 +485,11 @@ export const handleRetryOrReturnResponse = async (
 ): Promise<AppFetchResponse> => {
   // 재시도 설정이 전혀 없으면 재시도 판정 자체가 불필요합니다. 이 경우 clone을 만들지 않아
   // 아무도 소비하지 않는 복제 스트림이 매 요청마다 버퍼를 점유하는 것을 방지합니다.
+  // 2xx 성공 응답은 재시도 대상이 아니므로 전략을 호출하지 않습니다. 전략이 attempt만
+  // 검사하면(예: `attempt <= 3`) 성공 응답까지 재요청되는 함정을 막습니다.
   const canRetry =
-    Boolean(options?.retryStrategy) || (options?.retry ?? 0) > 0;
+    !response.ok &&
+    (Boolean(options?.retryStrategy) || (options?.retry ?? 0) > 0);
 
   if (canRetry) {
     const retryClone = response.clone();
@@ -538,6 +541,8 @@ export const handleRetryOrReturnResponse = async (
  *
  * @param {unknown} error 발생 예외
  * @param {boolean} isTimedOut 타임아웃 여부
+ * @param {boolean} isRetryable 재시도 가능 여부. fetch 이전 단계(쿼리 직렬화, 바디 직렬화,
+ *   beforeRequest)의 에러는 다시 시도해도 같은 결과이므로 false로 전달됩니다.
  * @param {string} path 요청 경로
  * @param {AppFetchOptions} [options] 요청 옵션
  * @param {number} attemptCount 시도 횟수
@@ -547,6 +552,7 @@ export const handleRetryOrReturnResponse = async (
 export const handleFetchError = async (
   error: unknown,
   isTimedOut: boolean,
+  isRetryable: boolean,
   path: string,
   options: AppFetchOptions | undefined,
   attemptCount: number,
@@ -559,10 +565,13 @@ export const handleFetchError = async (
   let formattedError = error;
 
   if (isTimedOut && error instanceof Error && error.name === 'AbortError') {
-    formattedError = new Error(
+    const timeoutError = new Error(
       `Request Timeout. time : ${options?.timeout ?? 3000}ms`,
       { cause: error },
     );
+    // 메시지 문자열 대신 `error.name === 'TimeoutError'`로 판별할 수 있게 합니다.
+    timeoutError.name = 'TimeoutError';
+    formattedError = timeoutError;
   }
 
   // 사용자가 전달한 signal에 의해 abort된 경우 재시도 없이 즉시 중단
@@ -574,7 +583,7 @@ export const handleFetchError = async (
   const hasRetryStrategy = Boolean(options?.retryStrategy);
   const hasPlainRetryCount = (options?.retry ?? 0) > 0;
 
-  if (hasRetryStrategy || hasPlainRetryCount) {
+  if (isRetryable && (hasRetryStrategy || hasPlainRetryCount)) {
     const errorRetryContext: RetryContext = {
       error: formattedError,
       attempt: attemptCount,

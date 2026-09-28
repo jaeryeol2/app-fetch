@@ -483,6 +483,8 @@ const fetchData = (
     };
 
     let response: Response;
+    // fetch 이전 단계(쿼리/바디 직렬화, beforeRequest)의 에러는 결정적이므로 재시도하지 않습니다.
+    let isFetchStarted = false;
     try {
       const timeoutMs = options?.timeout ?? 3000;
       requestTimer =
@@ -502,6 +504,7 @@ const fetchData = (
       disposeSignal = built.disposeSignal;
       const url = getURL(path, options);
 
+      isFetchStarted = true;
       response = await fetch(url, mergeOptions);
 
       if (requestTimer) {
@@ -514,9 +517,11 @@ const fetchData = (
       }
       releaseSignal();
 
+      // 타임아웃은 beforeRequest 도중 발생했더라도 일시적 장애이므로 재시도 대상에 포함합니다.
       return await handleFetchError(
         error,
         isTimedOut,
+        isFetchStarted || isTimedOut,
         path,
         options,
         attemptCount,
@@ -630,7 +635,12 @@ const create = (
  *
  * @author jaeryeol2
  */
-export const appFetch = Object.assign(fetchData, { create });
+export const appFetch = Object.assign(
+  // 내부 재시도용 attemptCount 파라미터가 공개 시그니처에 노출되지 않도록 감쌉니다.
+  (path: string, options?: AppFetchOptions): AppFetchPromise =>
+    fetchData(path, options),
+  { create },
+);
 
 export type {
   BodyFetchOptions,

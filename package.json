@@ -17,6 +17,10 @@
     "access": "public"
   },
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./dist/app-fetch.cjs",
   "module": "./dist/app-fetch.mjs",
   "types": "./dist/@types/app-fetch.d.mts",

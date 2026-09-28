@@ -74,6 +74,8 @@ const createdUser = await appFetch('https://api.example.com/users', {
 
 #### 🌐 JSP / HTML 환경 (Script Tag 사용)
 
+스크립트 태그 번들(`app-fetch.min.js`)은 ES2019 문법으로 빌드되어 Chrome 73+, Safari 12.1+ 등 `fetch`/`AbortController`를 지원하는 구형 브라우저에서도 동작합니다. (npm 패키지는 Node.js 18 이상 필요)
+
 ```html
 <!-- dist/app-fetch.min.js 파일을 script 태그로 로드 -->
 <script src="/js/dist/app-fetch.min.js"></script>
@@ -215,6 +217,9 @@ const response3 = await appFetch('https://api.example.com/custom', {
 - **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다.
 - **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다. 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요.
 - **`afterResponse` 인터셉터나 `retryStrategy`에서 발생한 예외는 재시도하지 않습니다.** `onError`를 1회 실행한 뒤 호출부로 그대로 전달됩니다.
+- **2xx 성공 응답에는 `retryStrategy`가 호출되지 않습니다.** 전략은 실패 응답(`response.ok === false`)과 네트워크 에러에 대해서만 평가되므로, `attempt`만 검사하는 전략도 성공 응답을 재요청하지 않습니다.
+- **fetch 이전 단계의 에러는 재시도하지 않습니다.** 쿼리 순환 참조, 바디 직렬화 실패, `beforeRequest` 예외는 다시 시도해도 같은 결과이므로 대기 없이 즉시 `onError` 후 전달됩니다. 단, 타임아웃은 `beforeRequest` 실행 중 발생했더라도 재시도 대상입니다.
+- **타임아웃 에러는 `error.name === 'TimeoutError'`로 판별할 수 있습니다.** 메시지는 `Request Timeout. time : {timeout}ms` 형식이며, 원본 `AbortError`는 `error.cause`에 담깁니다.
 - **사용자 요청 취소(`signal.abort()`) 시 즉시 중단:** 사용자가 전달한 `AbortSignal`이 취소(`aborted: true`)되면 남아있는 재시도 카운트와 무관하게 모든 재시도가 즉시 중단되고(재시도 대기(`delay`) 중이어도 대기를 끝까지 기다리지 않음) `AbortError`를 발생시켜 불필요한 중복 트래픽을 방지합니다.
 - **요청 바디가 `ReadableStream`인 경우 재시도가 자동으로 차단됩니다.** 스트림은 한 번 소비되면 다시 읽을 수 없어(1회성 소비), 동일한 스트림으로 재시도를 시도하면 두 번째 요청이 반드시 실패합니다. `app-fetch`는 이런 상황에서 `retry`/`retryStrategy` 설정과 무관하게 재시도를 건너뛰고 최초 응답/에러를 그대로 반환하며, 콘솔에 `console.warn`으로 원인을 안내합니다. 스트리밍 업로드에서 재시도가 필요하다면 `Blob`, `ArrayBuffer`, `string`, `FormData`처럼 재사용 가능한 바디 타입을 사용해 주세요.
 - **안전 하드캡(Hard Cap):** 무한 루프 방지를 위해 **한 요청의 총 시도 횟수는 10회를 넘지 않습니다**(= 최초 1회 + 재시도 최대 9회). 따라서 `retry: 10` 이상을 지정하더라도 10번째 시도에서 경고(`console.warn`)와 함께 재시도가 종료되며, 설정한 횟수가 그대로 반영되지 않습니다.
@@ -411,11 +416,11 @@ export const sampleFetch = Object.assign(wrap, { native });
 | `timeout` | `number` | `3000` | 각 시도당(per-attempt) 요청 타임아웃 (ms) |
 | `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 (`post`/`patch`는 제외, 필요 시 `retryStrategy` 사용) |
 | `delay` | `number` | `0` | 단순 재시도 대기 간격 (ms) |
-| `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 |
+| `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 (실패 응답과 네트워크 에러에만 호출, 2xx에는 호출되지 않음) |
 | `signal` | `AbortSignal` | `undefined` | 외부 AbortSignal (내부 타임아웃 Signal과 `AbortSignal.any`로 자동 합성, 취소 시 재시도 즉시 중단) |
 | `beforeRequest` | `BeforeRequestInterceptorType \| BeforeRequestInterceptorType[]` | `undefined` | 요청 전송 전 실행되는 인터셉터 (매 재시도 시에도 재실행) |
 | `afterResponse` | `AfterResponseInterceptorType \| AfterResponseInterceptorType[]` | `undefined` | 응답 수신 직후 실행되는 인터셉터 (`response.clone()` 제공) |
-| `onError` | `OnErrorType \| OnErrorType[]` | `undefined` | 통신 실패, 타임아웃, `afterResponse`/`retryStrategy` 예외 발생 시 요청당 1회 실행되는 에러 인터셉터 (HTTP 4xx/5xx 응답은 예외가 아니므로 호출되지 않음) |
+| `onError` | `OnErrorType \| OnErrorType[]` | `undefined` | 통신 실패, 타임아웃, `beforeRequest`/`afterResponse`/`retryStrategy` 예외, 쿼리·바디 직렬화 실패 시 요청당 1회 실행되는 에러 인터셉터 (HTTP 4xx/5xx 응답은 예외가 아니므로 호출되지 않음) |
 
 ### 헬퍼 함수 (Helper Functions)
 
