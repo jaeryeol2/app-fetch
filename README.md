@@ -17,12 +17,12 @@
 ## 📌 주요 특징 (Key Features)
 
 - ⚡ **Zero Dependencies & Native Fetch 기반**: 별도의 외부 종속성 없이 브라우저 및 Node.js 네이티브 `fetch` API를 활용합니다.
-- 📦 **DUAL ESM & CommonJS 지원**: `tsdown`으로 빌드되어 `.mjs` 및 `.cjs` 번들을 모두 제공합니다.
+- 📦 **DUAL ESM & CommonJS 지원**: `tsdown`으로 빌드되어 `.mjs` 및 `.cjs` 번들과 각각의 타입 선언(`.d.mts`/`.d.cts`)을 모두 제공합니다.
 - 🛠 **인스턴스 생성 (`appFetch.create`)**: `baseURL`, 기본 헤더, 인터셉터, 타임아웃 설정을 캡슐화한 커스텀 클라이언트를 생성할 수 있습니다.
 - 🔍 **중첩 쿼리 파라미터 직렬화 (`query`)**: 배열(`tags[0]=ts`), 중첩 객체, Date, Map, Set 등의 파라미터를 자동으로 인코딩 및 URL 쿼리 스트링으로 변환합니다. (순환 참조 감지 포함)
 - 📝 **스마트 요청 바디 처리 (`body`)**: Plain Object 입력 시 `Content-Type: application/json` 헤더 추가 및 자동 `JSON.stringify`를 수행하며, `FormData`, `Blob`, `URLSearchParams`는 유지합니다.
 - 🪝 **강력한 인터셉터 (`beforeRequest`, `afterResponse`, `onError`)**: 단일 함수 또는 배열 형태의 인터셉터를 체이닝하여 공통 헤더 주입, 토큰 갱신, 에러 로깅 등을 처리합니다.
-- ⏱ **타임아웃 & 자동 재시도 (`timeout`, `retry`, `delay`)**: `AbortController` 기반 타임아웃(기본 3,000ms) 및 일시적 오류(408, 429, 5xx 서버 오류 및 네트워크 단절) 발생 시 안전한 자동 재시도 기능을 제공합니다.
+- ⏱ **타임아웃 & 자동 재시도 (`timeout`, `retry`, `delay`)**: `AbortController` 기반 타임아웃(기본 3,000ms) 및 일시적 오류(408, 429, 5xx 서버 오류 및 네트워크 단절) 발생 시 안전한 자동 재시도 기능을 제공합니다. (멱등하지 않은 `post`/`patch`는 기본 재시도에서 제외)
 - 📄 **스마트 응답 파서 (`getData` & `.getData()`)**: `await appFetch(...).getData()` 직접 체이닝, `response.getData()`, `getData(response)` 헬퍼 함수 모두 지원하며, `Content-Type` 및 응답 상태에 따라 JSON, Blob(이미지, PDF, 바이너리), FormData, Plain Text 등을 자동 판별하여 파싱합니다.
 
 ---
@@ -42,7 +42,7 @@ npm run build
 | **`dist/app-fetch.mjs`** | **ESM** (ES Module) | React, Vue, Svelte, Next.js App Router, Vite, Nuxt 3 | ESNext 모듈 표준으로 `import { appFetch } from 'app-fetch'` 구문을 사용하는 최신 모듈 번들러 및 SSR 환경 전용 번들입니다. 트리쉐이킹(Tree-shaking)을 지원합니다. |
 | **`dist/app-fetch.cjs`** | **CommonJS** (CJS) | Node.js 백엔드 서버 (NestJS, Express, Fastify 등) | Node.js의 `const { appFetch } = require('app-fetch')` 구문 환경에서 동작하는 레거시 및 백엔드 CommonJS 모듈 번들입니다. |
 | **`dist/app-fetch.min.js`** | **IIFE** (Minified Global) | JSP, 레거시 HTML, 스크립트 태그 (`<script>`) 로드 환경 | 모듈 번들러가 없는 단일 HTML/JSP 환경에서 `<script src="app-fetch.min.js"></script>`로 직접 로드할 수 있는 경량화 번들입니다. 브라우저 전역 객체 `window.appFetch`에 자동 노출됩니다. |
-| **`dist/@types/app-fetch.d.mts`** | **DTS** (TypeScript Declaration) | TypeScript 개발 환경 | IDE(VS Code 등)에서 코드 자동 완성, 타입 검사 및 `AppFetchOptions`, `FetchInterceptors` 등의 타입 사양을 제공하는 선언 파일입니다. |
+| **`dist/@types/app-fetch.d.mts`**<br>**`dist/@types/app-fetch.d.cts`** | **DTS** (TypeScript Declaration) | TypeScript 개발 환경 | `import`용(`.d.mts`)과 `require`용(`.d.cts`) 선언 파일입니다. IDE(VS Code 등)에서 코드 자동 완성, 타입 검사 및 `AppFetchOptions`, `FetchInterceptors` 등의 타입 사양을 제공하는 선언 파일입니다. |
 
 ---
 
@@ -77,6 +77,7 @@ const createdUser = await appFetch('https://api.example.com/users', {
 ```html
 <!-- dist/app-fetch.min.js 파일을 script 태그로 로드 -->
 <script src="/js/dist/app-fetch.min.js"></script>
+<!-- 또는 CDN: <script src="https://unpkg.com/app-fetch"></script> (jsDelivr: https://cdn.jsdelivr.net/npm/app-fetch) -->
 <script>
   // window.appFetch 전역 객체 사용
   const { appFetch, getData } = window.appFetch;
@@ -147,6 +148,9 @@ const paymentApi = appFetch.create({
 });
 
 const userInfo = await userApi('/profile');
+// GET 조회는 인스턴스의 retry: 3이 적용됩니다.
+const paymentStatus = await paymentApi('/charge/123');
+// POST는 중복 결제 방지를 위해 기본 retry 대상에서 제외됩니다(1회만 전송).
 const paymentResult = await paymentApi('/charge', { method: 'post', body: { amount: 50000 } });
 ```
 
@@ -217,7 +221,7 @@ const response3 = await appFetch('https://api.example.com/custom', {
 
 ### 5. 응답 파싱 및 지원 포맷 (`getData`, `HttpError`, `returnError`)
 
-`getData`는 `Content-Type` 헤더를 분석하여 적절한 데이터 타입으로 자동 파싱하며, 스트림 잠김(Locked Body Stream) 방지를 위해 `response.clone()` 기반으로 안전하게 처리됩니다.
+`getData`는 `Content-Type` 헤더를 분석하여 적절한 데이터 타입으로 자동 파싱합니다. 텍스트/JSON은 `charset` 파라미터(예: `EUC-KR`)를 반영해 디코딩하며, 지원하지 않는 charset은 UTF-8로 처리합니다.
 
 ```typescript
 import { appFetch, getData, HttpError, returnError } from 'app-fetch';
@@ -371,7 +375,7 @@ export const sampleFetch = Object.assign(wrap, { native });
 2. **`beforeRequest` 비동기 타임아웃 즉시 차단**:
    - 비동기 인터셉터(토큰 갱신 등) 실행 도중 타임아웃(`options.timeout`)이 초과되면 `Promise.race`를 통해 `AbortSignal` 이벤트를 감지하여 즉시 요청을 중단하고 `AbortError`를 발생시킵니다.
 3. **`response.clone()` 스트림 잠김 방지**:
-   - `afterResponse` 인터셉터 로깅 및 `getData` 본문 파싱 시 원본 Response 스트림이 잠겨(Locked Body Stream) 재사용이 불가능해지는 문제를 방지하기 위해 내부적으로 `response.clone()`을 체계적으로 활용합니다.
+   - `afterResponse` 인터셉터에는 `response.clone()`이 전달되므로, 인터셉터에서 본문을 읽어도 이후 `getData()` 파싱에 영향을 주지 않습니다. `getData()` 자체는 원본 스트림을 한 번만 소비하고 결과를 캐시합니다.
 
 ---
 
@@ -394,7 +398,7 @@ export const sampleFetch = Object.assign(wrap, { native });
 `AppFetchOptions`는 TypeScript의 **Discriminated Union**으로 구성되어 있어, 모든 메서드에서 `query` 파라미터를 자유롭게 전달할 수 있으며, `body` 옵션은 `POST/PUT/PATCH/DELETE` 메서드에서 안전하게 허용됩니다.
 
 - **본문이 허용되지 않는 메서드는 `GET`/`HEAD`뿐입니다.** RFC 9110에 따라 `DELETE`는 본문을 가질 수 있으므로(대량 삭제 API 등) `POST`와 동일하게 직렬화됩니다. `GET`/`HEAD`에 전달된 `body`는 네이티브 `fetch`의 `TypeError`를 막기 위해 조용히 제거됩니다.
-- **`body`가 `FormData`이면 `Content-Type` 헤더가 자동으로 제거됩니다.** 멀티파트 `boundary`는 런타임이 직접 생성해야 하므로, 인스턴스 기본 헤더 등에 `application/json`이 설정되어 있어도 업로드가 깨지지 않습니다.
+- **`body`가 `FormData`이면 `Content-Type` 헤더가 자동으로 제거됩니다.** 멀티파트 `boundary`는 런타임이 직접 생성해야 하므로, 인스턴스 기본 헤더 등에 `application/json`이 설정되어 있어도 업로드가 깨지지 않습니다. `URLSearchParams`/`Blob` 본문도 JSON 계열 `Content-Type`이 남아 있으면 제거되어, 런타임이 `application/x-www-form-urlencoded` 또는 `Blob.type`으로 채웁니다.
 - **스킴이 명시된 절대 URL(`https:`, `blob:`, `data:` 등)은 `baseURL`과 결합하지 않고 그대로 사용됩니다.** 반대로 `//`로 시작하는 경로는 `baseURL`이 설정된 경우 그 하위 상대 경로로 정규화되어, 사용자 입력으로 조립된 경로가 인증 헤더를 실은 채 외부 호스트로 나가는 것을 방지합니다.
 
 | 옵션명 | 타입 | 기본값 | 설명 |
@@ -405,13 +409,13 @@ export const sampleFetch = Object.assign(wrap, { native });
 | `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH / DELETE 요청 시 전송할 바디 (Object는 자동 JSON 직렬화, GET / HEAD에서는 제거됨) |
 | `headers` | `HeadersInit` | `undefined` | 요청 헤더 (`mergeHeaders`를 통해 네이티브 Headers 속성 유지) |
 | `timeout` | `number` | `3000` | 각 시도당(per-attempt) 요청 타임아웃 (ms) |
-| `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 |
+| `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 (`post`/`patch`는 제외, 필요 시 `retryStrategy` 사용) |
 | `delay` | `number` | `0` | 단순 재시도 대기 간격 (ms) |
 | `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 |
 | `signal` | `AbortSignal` | `undefined` | 외부 AbortSignal (내부 타임아웃 Signal과 `AbortSignal.any`로 자동 합성, 취소 시 재시도 즉시 중단) |
 | `beforeRequest` | `BeforeRequestInterceptorType \| BeforeRequestInterceptorType[]` | `undefined` | 요청 전송 전 실행되는 인터셉터 (매 재시도 시에도 재실행) |
 | `afterResponse` | `AfterResponseInterceptorType \| AfterResponseInterceptorType[]` | `undefined` | 응답 수신 직후 실행되는 인터셉터 (`response.clone()` 제공) |
-| `onError` | `OnErrorType \| OnErrorType[]` | `undefined` | 통신 실패 및 타임아웃 발생 시 실행되는 에러 인터셉터 |
+| `onError` | `OnErrorType \| OnErrorType[]` | `undefined` | 통신 실패, 타임아웃, `afterResponse`/`retryStrategy` 예외 발생 시 요청당 1회 실행되는 에러 인터셉터 (HTTP 4xx/5xx 응답은 예외가 아니므로 호출되지 않음) |
 
 ### 헬퍼 함수 (Helper Functions)
 
