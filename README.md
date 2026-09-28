@@ -207,9 +207,11 @@ const response3 = await appFetch('https://api.example.com/custom', {
 #### 💡 재시도 및 타임아웃 동작 방식 (Retry & Timeout Details)
 
 - **`timeout`은 각 시도당(Per-Attempt) 적용됩니다.** 전체 요청 예산(Total Budget)이 아니므로, `timeout: 3000, retry: 3` 설정 시 각 시도마다 3초의 타임아웃이 개별 적용되어 최악의 경우 (4회 시도 * 3초) + 재시도 지연 시간만큼 소요될 수 있습니다.
+- **`timeout`은 응답 헤더 수신까지만 적용됩니다.** 헤더를 받은 뒤 `getData()`로 본문을 읽는 구간은 타임아웃 대상이 아니므로, 본문 수신까지 제한이 필요하면 `signal` 옵션(예: `AbortSignal.timeout(ms)`)을 함께 전달하세요. `beforeRequest` 인터셉터 실행 시간은 타임아웃에 포함됩니다.
 - **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다.
-- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다.
-- **사용자 요청 취소(`signal.abort()`) 시 즉시 중단:** 사용자가 전달한 `AbortSignal`이 취소(`aborted: true`)되면 남아있는 재시도 카운트와 무관하게 모든 재시도가 즉시 중단되고 `AbortError`를 발생시켜 불필요한 중복 트래픽을 방지합니다.
+- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다. 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요.
+- **`afterResponse` 인터셉터나 `retryStrategy`에서 발생한 예외는 재시도하지 않습니다.** `onError`를 1회 실행한 뒤 호출부로 그대로 전달됩니다.
+- **사용자 요청 취소(`signal.abort()`) 시 즉시 중단:** 사용자가 전달한 `AbortSignal`이 취소(`aborted: true`)되면 남아있는 재시도 카운트와 무관하게 모든 재시도가 즉시 중단되고(재시도 대기(`delay`) 중이어도 대기를 끝까지 기다리지 않음) `AbortError`를 발생시켜 불필요한 중복 트래픽을 방지합니다.
 - **요청 바디가 `ReadableStream`인 경우 재시도가 자동으로 차단됩니다.** 스트림은 한 번 소비되면 다시 읽을 수 없어(1회성 소비), 동일한 스트림으로 재시도를 시도하면 두 번째 요청이 반드시 실패합니다. `app-fetch`는 이런 상황에서 `retry`/`retryStrategy` 설정과 무관하게 재시도를 건너뛰고 최초 응답/에러를 그대로 반환하며, 콘솔에 `console.warn`으로 원인을 안내합니다. 스트리밍 업로드에서 재시도가 필요하다면 `Blob`, `ArrayBuffer`, `string`, `FormData`처럼 재사용 가능한 바디 타입을 사용해 주세요.
 - **안전 하드캡(Hard Cap):** 무한 루프 방지를 위해 **한 요청의 총 시도 횟수는 10회를 넘지 않습니다**(= 최초 1회 + 재시도 최대 9회). 따라서 `retry: 10` 이상을 지정하더라도 10번째 시도에서 경고(`console.warn`)와 함께 재시도가 종료되며, 설정한 횟수가 그대로 반영되지 않습니다.
 
@@ -398,7 +400,7 @@ export const sampleFetch = Object.assign(wrap, { native });
 | 옵션명 | 타입 | 기본값 | 설명 |
 | :--- | :--- | :---: | :--- |
 | `baseURL` | `string` | `undefined` | 모든 상대 경로에 결합될 기본 URL |
-| `method` | `'get' | 'delete' | 'post' | 'put' | 'patch'` | `'get'` | HTTP 메서드 || 'delete' \| 'post' \| 'put' \| 'patch'` | `'get'` | HTTP 메서드 |
+| `method` | `'get' \| 'delete' \| 'head' \| 'options' \| 'post' \| 'put' \| 'patch'` | `'get'` | HTTP 메서드. 소문자로 지정하며 전송 시 내부에서 대문자로 변환됩니다 |
 | `query` | `Record<string, unknown> \| object` | `undefined` | 모든 HTTP 요청 시 URL 쿼리 스트링으로 직렬화할 파라미터 객체 (중첩 객체/배열/Map/Set/Date 지원) |
 | `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH / DELETE 요청 시 전송할 바디 (Object는 자동 JSON 직렬화, GET / HEAD에서는 제거됨) |
 | `headers` | `HeadersInit` | `undefined` | 요청 헤더 (`mergeHeaders`를 통해 네이티브 Headers 속성 유지) |

@@ -482,6 +482,7 @@ const fetchData = (
       disposeSignal = null;
     };
 
+    let response: Response;
     try {
       const timeoutMs = options?.timeout ?? 3000;
       requestTimer =
@@ -501,20 +502,12 @@ const fetchData = (
       disposeSignal = built.disposeSignal;
       const url = getURL(path, options);
 
-      const response = await fetch(url, mergeOptions);
+      response = await fetch(url, mergeOptions);
 
       if (requestTimer) {
         clearTimeout(requestTimer);
       }
       releaseSignal();
-
-      return await handleRetryOrReturnResponse(
-        response,
-        path,
-        options,
-        attemptCount,
-        fetchData,
-      );
     } catch (error) {
       if (requestTimer) {
         clearTimeout(requestTimer);
@@ -533,6 +526,16 @@ const fetchData = (
       // 안전망: 위 경로에서 해제되지 않은 경우에만 동작합니다(해제는 멱등).
       releaseSignal();
     }
+
+    // try 밖에서 호출해야 합니다. 안에 두면 재시도(재귀) 시도가 던진 예외를
+    // 위 catch가 다시 잡아 재시도가 중복되고 onError가 여러 번 호출됩니다.
+    return await handleRetryOrReturnResponse(
+      response,
+      path,
+      options,
+      attemptCount,
+      fetchData,
+    );
   })();
 
   return Object.assign(promise, {

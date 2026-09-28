@@ -20,6 +20,8 @@
   "main": "./dist/app-fetch.cjs",
   "module": "./dist/app-fetch.mjs",
   "types": "./dist/@types/app-fetch.d.mts",
+  "unpkg": "./dist/app-fetch.min.js",
+  "jsdelivr": "./dist/app-fetch.min.js",
   "files": [
     "dist",
     "README.md",
@@ -27,14 +29,19 @@
   ],
   "exports": {
     ".": {
-      "types": "./dist/@types/app-fetch.d.mts",
-      "import": "./dist/app-fetch.mjs",
-      "require": "./dist/app-fetch.cjs",
+      "import": {
+        "types": "./dist/@types/app-fetch.d.mts",
+        "default": "./dist/app-fetch.mjs"
+      },
+      "require": {
+        "types": "./dist/@types/app-fetch.d.cts",
+        "default": "./dist/app-fetch.cjs"
+      },
       "script": "./dist/app-fetch.min.js"
     }
   },
   "scripts": {
-    "build": "tsdown && node -e \"fs.renameSync('dist/app-fetch.min.iife.js', 'dist/app-fetch.min.js')\"",
+    "build": "tsdown && node -e \"fs.renameSync('dist/app-fetch.min.iife.js', 'dist/app-fetch.min.js'); fs.copyFileSync('dist/@types/app-fetch.d.mts', 'dist/@types/app-fetch.d.cts')\"",
     "prepare": "npm run build",
     "pretest": "npm run build",
     "test": "vitest run",

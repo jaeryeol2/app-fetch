@@ -34,7 +34,8 @@ export interface RetryStrategyObject {
 
 export type RetryStrategy = RetryStrategyFunction | RetryStrategyObject;
 
-export type HttpNoBodyMethod = 'get' | 'delete';
+/** 호출 시에는 소문자로 지정하며, 전송 직전 내부에서 대문자로 변환됩니다. */
+export type HttpNoBodyMethod = 'get' | 'delete' | 'head' | 'options';
 /**
  * 본문 전송이 허용되는 메서드입니다. RFC 9110 기준 본문이 금지되는 것은 GET/HEAD뿐이며
  * DELETE는 본문을 가질 수 있으므로(대량 삭제 API 등) 포함합니다.
@@ -104,7 +105,7 @@ export type AppFetchInstance = ((
   path: string,
   options?: AppFetchOptions,
 ) => AppFetchPromise) & {
-  create?: (
+  create: (
     defaults: Omit<AppFetchOptions, 'method' | 'query' | 'body'>,
   ) => AppFetchInstance;
 };

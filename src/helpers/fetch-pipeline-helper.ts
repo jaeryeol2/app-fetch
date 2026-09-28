@@ -128,12 +128,29 @@ export const afterResponseHandler = async (
 
 /**
  * 재시도 간격 대기를 위한 지연 함수입니다.
+ * signal이 abort되면 즉시 resolve합니다. 이어지는 fetch가 abort된 signal로
+ * AbortError를 내고 기존 사용자 abort 처리 경로(onError 1회 후 throw)를 그대로 탑니다.
  *
  * @param {number} ms 대기 시간 (밀리초)
+ * @param {AbortSignal | null} [signal] 대기를 조기 종료할 사용자 signal
  * @returns {Promise<void>}
  */
-export const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms: number, signal?: AbortSignal | null): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 /**
  * 에러 발생 시 호출되는 onError 인터셉터들을 순차적으로 실행합니다.
@@ -151,6 +168,28 @@ export const onErrorHandler = async (
     for (const interceptor of interceptors) {
       await interceptor(error);
     }
+  }
+};
+
+/**
+ * 작업이 실패하면 onError 인터셉터를 실행한 뒤 예외를 그대로 다시 던집니다.
+ * 응답 수신 이후 단계(재시도 판정, afterResponse)의 예외가 재시도 경로를 타지 않으면서도
+ * onError로는 전달되도록 합니다.
+ *
+ * @template T 작업 결과 타입
+ * @param {() => Promise<T>} task 실행할 작업
+ * @param {OnErrorType | OnErrorType[]} [onError] 에러 인터셉터 목록
+ * @returns {Promise<T>} 작업 결과
+ */
+const withOnError = async <T>(
+  task: () => Promise<T>,
+  onError?: OnErrorType | OnErrorType[],
+): Promise<T> => {
+  try {
+    return await task();
+  } catch (error) {
+    await onErrorHandler(error, onError);
+    throw error;
   }
 };
 
@@ -208,6 +247,13 @@ export const setupRequestBody = (
     // 기본 헤더 등으로 미리 설정된 Content-Type이 남아 있으면 제거합니다.
     if (body instanceof FormData) {
       (mergeOptions.headers as Headers).delete('Content-Type');
+    } else if (body instanceof URLSearchParams || body instanceof Blob) {
+      // 인스턴스 기본 헤더의 JSON Content-Type이 남아 있으면 본문과 어긋납니다.
+      // 제거하면 fetch가 urlencoded 또는 Blob.type으로 알맞게 채웁니다.
+      const headers = mergeOptions.headers as Headers;
+      if (headers.get('Content-Type')?.toLowerCase().includes('json')) {
+        headers.delete('Content-Type');
+      }
     }
   } else {
     const headers = mergeOptions.headers as Headers;
@@ -349,12 +395,17 @@ const computeRetryDecision = async (
   }
 
   // 기본 재시도 판별 (408, 429, 5xx 및 네트워크 에러 대상)
+  // POST/PATCH는 멱등하지 않아 재전송 시 중복 처리 위험이 있으므로 기본 재시도에서 제외합니다.
+  // 필요하면 retryStrategy를 명시해 재시도할 수 있습니다.
+  const method = options?.method?.toLowerCase();
+  const isIdempotent = method !== 'post' && method !== 'patch';
   const maxRetries = options?.retry ?? 0;
   const status = context.response?.status;
   const isRetryableStatus = status
     ? status === 408 || status === 429 || (status >= 500 && status <= 599)
     : Boolean(context.error);
-  const shouldRetry = isRetryableStatus && context.attempt <= maxRetries;
+  const shouldRetry =
+    isIdempotent && isRetryableStatus && context.attempt <= maxRetries;
   const delay = options?.delay ?? 0;
 
   return { shouldRetry, delay };
@@ -386,6 +437,11 @@ export const buildRequestInit = async (
     retryStrategy: undefined,
   } as RequestInit & Record<string, unknown>;
 
+  // 호출 시에는 소문자를 쓰고, 전송은 대문자로 합니다. fetch 스펙은 PATCH를
+  // 대문자로 정규화하지 않아 소문자 'patch'가 그대로 나가 405/400을 유발합니다.
+  if (options?.method) {
+    mergeOptions.method = options.method.toUpperCase();
+  }
   mergeOptions.headers = mergeHeaders(options?.headers);
 
   setupRequestBody(mergeOptions, options);
@@ -440,15 +496,19 @@ export const handleRetryOrReturnResponse = async (
       maxRetries: options?.retry ?? 0,
     };
 
-    const retryDecision = await evaluateRetryStrategy(
-      retryContext,
-      options?.retryStrategy,
-      options,
+    const retryDecision = await withOnError(
+      () => evaluateRetryStrategy(retryContext, options?.retryStrategy, options),
+      options?.onError,
     );
 
     if (retryDecision.shouldRetry) {
+      // 버려지는 응답의 두 분기를 모두 취소해야 연결과 버퍼가 즉시 회수됩니다.
+      void response.body?.cancel().catch(() => undefined);
+      if (!retryClone.bodyUsed) {
+        void retryClone.body?.cancel().catch(() => undefined);
+      }
       if (retryDecision.delay > 0) {
-        await sleep(retryDecision.delay);
+        await sleep(retryDecision.delay, options?.signal);
       }
       return await fetchExecutor(path, options, attemptCount + 1);
     }
@@ -463,7 +523,10 @@ export const handleRetryOrReturnResponse = async (
     }
   }
 
-  await afterResponseHandler(response, options?.afterResponse);
+  await withOnError(
+    () => afterResponseHandler(response, options?.afterResponse),
+    options?.onError,
+  );
 
   return Object.assign(response, {
     getData: <T = unknown>() => getData<T>(response),
@@ -524,7 +587,7 @@ export const handleFetchError = async (
     );
     if (errorDecision.shouldRetry) {
       if (errorDecision.delay > 0) {
-        await sleep(errorDecision.delay);
+        await sleep(errorDecision.delay, options?.signal);
       }
       return await fetchExecutor(path, options, attemptCount + 1);
     }

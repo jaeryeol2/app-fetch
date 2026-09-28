@@ -161,6 +161,25 @@ const isTextContentType = (contentType: string): boolean => {
 const NOT_MATCHED: unique symbol = Symbol('app-fetch:not-matched');
 
 /**
+ * Content-Type의 charset 파라미터로 디코더를 만듭니다. 레거시 서버의 EUC-KR 등
+ * 비 UTF-8 응답이 깨지지 않도록 하며, 지원하지 않는 라벨이면 UTF-8로 대체합니다.
+ *
+ * @param {string} contentType Content-Type 소문자 문자열
+ * @returns {TextDecoder} 텍스트 디코더
+ */
+const createDecoder = (contentType: string): TextDecoder => {
+  const charset = /charset=["']?([^;"'\s]+)/.exec(contentType)?.[1];
+  if (charset) {
+    try {
+      return new TextDecoder(charset);
+    } catch {
+      // 지원하지 않는 charset 라벨은 UTF-8로 처리합니다.
+    }
+  }
+  return new TextDecoder();
+};
+
+/**
  * Content-Type 카테고리에 맞춰 적절한 파서(json, blob, formData, text)를 분기 실행합니다.
  * 매칭되는 카테고리가 없으면 `NOT_MATCHED` sentinel을 반환하여, 파싱된 값이 `null`인 경우와
  * 명확히 구분합니다.
@@ -178,7 +197,7 @@ const parseBodyByContentType = async <T>(
   contentType: string,
 ): Promise<AppFetchData<T> | typeof NOT_MATCHED> => {
   if (isJsonContentType(contentType)) {
-    return JSON.parse(new TextDecoder().decode(buffer)) as T;
+    return JSON.parse(createDecoder(contentType).decode(buffer)) as T;
   }
   if (isBinaryContentType(contentType)) {
     return new Blob([buffer], { type: contentType });
@@ -187,7 +206,7 @@ const parseBodyByContentType = async <T>(
     return await new Response(buffer, { headers }).formData();
   }
   if (isTextContentType(contentType)) {
-    return new TextDecoder().decode(buffer);
+    return createDecoder(contentType).decode(buffer);
   }
   return NOT_MATCHED;
 };
