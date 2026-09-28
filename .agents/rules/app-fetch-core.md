@@ -27,7 +27,6 @@ Using only the native `fetch` API — with no external HTTP dependencies (`axios
 app-fetch/
 ├── src/
 │   ├── index.ts                     # Main entry point (appFetch, appFetch.create, query/url/request helpers)
-│   ├── sample.ts                    # Example wrapper for real-project usage (sampleFetch)
 │   ├── @types/
 │   │   └── fetch-type.d.ts          # Core TypeScript type definitions for interceptors, options, and errors
 │   └── helpers/
@@ -38,8 +37,11 @@ app-fetch/
 ├── package.json                     # Package configuration and build scripts
 ├── tsconfig.json                    # TS compiler options
 ├── tsdown.config.ts                 # Bundler configuration
+├── examples/sample.ts               # Example wrapper for real-project usage (sampleFetch)
+├── tests/                           # Vitest suite, harness/, runtime-smoke.mjs (tests/tmp/ is gitignored)
+├── .github/workflows/ci.yml         # CI: lint/typecheck/test on Node 22/24, bundle smoke on 18/20
 ├── README.md                        # Library guide
-├── manual.html                      # Single-page developer manual (does not include test history)
+├── CHANGELOG.md                     # Release notes
 └── .agents/                         # Agent rules and skills
 ```
 

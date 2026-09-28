@@ -22,8 +22,10 @@ app-fetch/
 │       └── interceptor-helper.ts    # composeInterceptors, mergeFetchOptions, setInterceptors
 ├── tests/                           # Unit tests and harness (harness/)
 ├── dist/                            # tsdown build output
+├── examples/sample.ts               # Example project wrapper (sampleFetch)
+├── .github/workflows/ci.yml         # CI: lint/typecheck/test on Node 22/24, bundle smoke on 18/20
 ├── README.md                        # Library guide
-├── manual.html                      # Single-page developer manual (does not include test history)
+├── CHANGELOG.md                     # Release notes
 └── .agents/                         # Agent rules and skills
 ```
 
