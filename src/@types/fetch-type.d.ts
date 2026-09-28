@@ -54,6 +54,11 @@ export interface BaseFetchOptions
    * 인증 헤더가 외부 호스트로 전송되는 것을 막기 위해 기본적으로 차단합니다.
    */
   allowAbsoluteUrls?: boolean;
+  /**
+   * Node.js(undici) 전용 요청 디스패처. 사내 프록시 등에서 `ProxyAgent`를 전달할 때 사용하며,
+   * 네이티브 fetch에 그대로 전달됩니다. 브라우저에서는 무시됩니다.
+   */
+  dispatcher?: unknown;
   /** request timeout */
   timeout?: number;
   /** if fail retry count */

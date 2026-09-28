@@ -405,6 +405,39 @@ export const sampleFetch = Object.assign(wrap, { native });
    await api('https://partner.test/data', { allowAbsoluteUrls: true });    // ✅ 명시적 허용
    ```
 
+### 8. 기업 환경 설정 (사내 프록시 · SSR baseURL)
+
+#### 🏢 사내 프록시 (Node.js 서버)
+
+Node.js 네이티브 `fetch`는 `HTTP_PROXY`/`HTTPS_PROXY` 환경변수를 **기본적으로 무시**합니다. 프록시를 거쳐야 하는 서버에서는 아래 중 하나를 적용하세요.
+
+```bash
+# 방법 1) Node.js 24+ : 환경변수 프록시 활성화 (코드 변경 없음)
+NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://proxy.corp.local:8080 node server.js
+```
+
+```typescript
+// 방법 2) undici ProxyAgent를 dispatcher로 전달 (npm i undici)
+import { ProxyAgent } from 'undici';
+
+const api = appFetch.create({
+  baseURL: 'https://api.example.com',
+  dispatcher: new ProxyAgent('http://proxy.corp.local:8080'),
+});
+```
+
+`dispatcher`는 네이티브 `fetch`에 그대로 전달되며 브라우저에서는 무시됩니다. 사내 CA 인증서는 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 환경변수로 추가합니다.
+
+#### 🌐 SSR에서는 서버용 `baseURL`을 절대 URL로
+
+서버(Node.js)에는 브라우저의 현재 위치(`location`)가 없으므로 `baseURL: '/api'` 같은 상대 경로는 해석되지 않습니다. 이 상태로는 상대 경로 요청이 네이티브 `fetch`에서 실패하고, 절대 URL 요청은 origin을 비교할 수 없어 절대 URL 차단 가드(`7. 내부 안전 가드` 4번)에 의해 모두 차단됩니다. Nuxt/Next.js 공용 코드에서는 실행 환경에 따라 `baseURL`을 분기하세요.
+
+```typescript
+const api = appFetch.create({
+  baseURL: typeof window === 'undefined' ? process.env.INTERNAL_API_URL : '/api',
+});
+```
+
 ---
 
 ## 📖 API Reference
@@ -441,6 +474,7 @@ export const sampleFetch = Object.assign(wrap, { native });
 | `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 (`post`/`patch`는 제외, 필요 시 `retryStrategy` 사용) |
 | `delay` | `number` | `0` | 단순 재시도 대기 간격 (ms) |
 | `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 (실패 응답과 네트워크 에러에만 호출, 2xx에는 호출되지 않음) |
+| `dispatcher` | `unknown` | `undefined` | Node.js(undici) 전용 디스패처. 사내 프록시용 `ProxyAgent` 등을 네이티브 `fetch`에 전달 (브라우저에서는 무시) |
 | `signal` | `AbortSignal` | `undefined` | 외부 AbortSignal (내부 타임아웃 Signal과 `AbortSignal.any`로 자동 합성, 취소 시 재시도 즉시 중단) |
 | `beforeRequest` | `BeforeRequestInterceptorType \| BeforeRequestInterceptorType[]` | `undefined` | 요청 전송 전 실행되는 인터셉터 (매 재시도 시에도 재실행) |
 | `afterResponse` | `AfterResponseInterceptorType \| AfterResponseInterceptorType[]` | `undefined` | 응답 수신 직후 실행되는 인터셉터 (`response.clone()` 제공) |

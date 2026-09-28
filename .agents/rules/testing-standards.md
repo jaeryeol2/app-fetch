@@ -62,7 +62,8 @@ The harness must perform unit tests against the following 8 target environments:
 ---
 
 ## 8. Strict Test File Location Principle
-- All unit tests and temporary test scripts must **always be created and written only under the `tests/` folder** (registered in `.gitignore` and safely managed).
+- All unit tests must **always be created and written only under the `tests/` folder**. The suite is committed to the repository and run by CI (`.github/workflows/ci.yml`) on every push and pull request.
+- Temporary or throwaway test scripts go under `tests/tmp/`, which is registered in `.gitignore` and never committed.
 
 ---
 
