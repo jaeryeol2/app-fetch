@@ -49,6 +49,11 @@ export interface BaseFetchOptions
   extends FetchInterceptors, Omit<RequestInit, 'method' | 'body'> {
   /** base url */
   baseURL?: string;
+  /**
+   * baseURL이 설정된 경우 origin이 다른 http(s) 절대 URL 요청을 허용할지 여부 (기본값 false).
+   * 인증 헤더가 외부 호스트로 전송되는 것을 막기 위해 기본적으로 차단합니다.
+   */
+  allowAbsoluteUrls?: boolean;
   /** request timeout */
   timeout?: number;
   /** if fail retry count */

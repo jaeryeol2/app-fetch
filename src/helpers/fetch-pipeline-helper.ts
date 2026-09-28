@@ -427,6 +427,7 @@ export const buildRequestInit = async (
   const mergeOptions: RequestInit = {
     ...options,
     baseURL: undefined,
+    allowAbsoluteUrls: undefined,
     query: undefined,
     beforeRequest: undefined,
     afterResponse: undefined,

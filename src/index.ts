@@ -373,6 +373,52 @@ const resolveBaseURL = (baseURL?: string): string => {
 };
 
 /**
+ * URL의 origin을 반환합니다. 상대 URL은 브라우저의 현재 위치를 기준으로 해석하며,
+ * 해석할 수 없으면 null을 반환합니다.
+ *
+ * @param {string} url 대상 URL
+ * @returns {string | null} origin 또는 null
+ */
+const getOrigin = (url: string): string | null => {
+  try {
+    const base = typeof location === 'undefined' ? undefined : location.href;
+    return new URL(url, base).origin;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * baseURL이 설정된 요청에서 origin이 다른 http(s) 절대 URL을 차단합니다.
+ * 사용자 입력으로 조립된 경로가 baseURL을 우회해 인증 헤더와 함께 외부 호스트로
+ * 전송되는 것(자격증명 유출/SSRF)을 막습니다. blob:/data: 등 네트워크로 나가지 않는
+ * 스킴과 baseURL과 같은 origin의 URL은 허용합니다.
+ *
+ * @param {string} path 절대 URL
+ * @param {string} cleanBase 정규화된 baseURL (없으면 빈 문자열)
+ * @param {boolean} [allowAbsoluteUrls] true이면 검사를 생략
+ * @throws {Error} origin이 다른 절대 URL인 경우
+ */
+const assertAbsoluteUrlAllowed = (
+  path: string,
+  cleanBase: string,
+  allowAbsoluteUrls?: boolean,
+): void => {
+  if (!cleanBase || allowAbsoluteUrls || !/^https?:/i.test(path)) {
+    return;
+  }
+
+  const origin = getOrigin(path);
+  if (origin !== getOrigin(cleanBase)) {
+    // 전체 URL 대신 origin만 노출해 쿼리에 포함된 토큰이 로그에 남지 않게 합니다.
+    throw new Error(
+      `Absolute URL origin "${origin}" does not match baseURL. ` +
+        'Set allowAbsoluteUrls: true to allow cross-origin absolute URLs.',
+    );
+  }
+};
+
+/**
  * 상대 및 절대 경로를 판단하여 기본 요청 경로를 조합합니다.
  *
  * @param {string} path 요청 경로
@@ -380,13 +426,14 @@ const resolveBaseURL = (baseURL?: string): string => {
  * @returns {string} 조합된 기본 경로
  */
 const buildBasePath = (path: string, options?: AppFetchOptions): string => {
+  const cleanBase = resolveBaseURL(options?.baseURL);
+
   // 스킴이 명시된 절대 URL은 그대로 사용합니다. http/https뿐 아니라 blob:, data:,
   // file: 등도 포함해야 브라우저에서 Blob/DataURL 페치가 baseURL에 오염되지 않습니다.
   if (/^[a-z][a-z0-9+.-]*:/i.test(path)) {
+    assertAbsoluteUrlAllowed(path, cleanBase, options?.allowAbsoluteUrls);
     return path;
   }
-
-  const cleanBase = resolveBaseURL(options?.baseURL);
 
   // '//host/path' 형태는 baseURL이 지정되지 않은 경우에만 프로토콜 상대 URL로 인정합니다.
   // baseURL이 있는데도 이를 절대 URL로 취급하면, 사용자 입력으로 조립된 경로가

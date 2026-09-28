@@ -30,6 +30,9 @@ interface ResponseApi<T> {
 /**
  * 프로젝트 전역에서 공유되는 공통 인터셉터 레지스트리 객체입니다.
  * 필요에 따라 인증 토큰 갱신, 글로벌 로깅, 에러 모니터링 인터셉터를 동적으로 등록하여 관리할 수 있습니다.
+ *
+ * 주의: 모듈 전역 객체이므로 SSR/서버 환경에서 요청마다 사용자 토큰을 등록하면 동시 요청 간에
+ * 토큰이 섞입니다. 사용자별 값은 호출 시 headers 또는 요청별 beforeRequest로 전달하세요.
  */
 const globalInterceptors: FetchInterceptors = {
   beforeRequest: [],
