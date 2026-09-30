@@ -472,7 +472,7 @@ NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://proxy.corp.local:8080 node server.js
 ```
 
 ```typescript
-// 방법 2) undici ProxyAgent를 dispatcher로 전달 (npm i undici)
+// 방법 2) undici ProxyAgent를 dispatcher로 전달 (npm i undici@^<Node 내장 메이저>, 아래 주의 참고)
 import { ProxyAgent } from 'undici';
 
 const api = appFetch.create({
@@ -481,7 +481,10 @@ const api = appFetch.create({
 });
 ```
 
-`dispatcher`는 네이티브 `fetch`에 그대로 전달되며 브라우저에서는 무시됩니다. `app-fetch` 자체는 의존성이 없으므로 `ProxyAgent`/`Agent`를 쓰려면 소비자 프로젝트에 `undici`를 설치해야 하며, 설치한 `undici`와 Node에 내장된 `undici`의 메이저 버전이 다르면 dispatcher 인터페이스가 호환되지 않을 수 있습니다. Next.js처럼 서버 `fetch`를 패치하는 프레임워크에서는 `dispatcher`가 그대로 전달되는지도 확인하세요. 사내 CA 인증서는 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 환경변수로 추가합니다.
+`dispatcher`는 네이티브 `fetch`에 그대로 전달되며 브라우저에서는 무시됩니다. `app-fetch` 자체는 의존성이 없으므로 `ProxyAgent`/`Agent`를 쓰려면 소비자 프로젝트에 `undici`를 설치해야 합니다.
+
+> ⚠️ **설치하는 `undici`의 메이저 버전을 Node에 내장된 버전과 맞추세요.** `node -p process.versions.undici`로 내장 버전을 확인한 뒤 `npm i undici@^<그 메이저>`로 설치합니다(예: Node 24 → 내장 7.x → `undici@^7`). 버전을 지정하지 않고 설치하면 최신 메이저(8.x)가 설치되어, Node 24에서는 첫 요청부터 모든 요청이 `TypeError: fetch failed`(cause: `InvalidArgumentError: invalid onRequestStart method`, `UND_ERR_INVALID_ARG`)로 실패합니다. 에러 메시지에 버전 불일치가 드러나지 않으니 이 문자열로 검색하세요.
+ Next.js처럼 서버 `fetch`를 패치하는 프레임워크에서는 `dispatcher`가 그대로 전달되는지도 확인하세요. 사내 CA 인증서는 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 환경변수로 추가합니다.
 
 #### 🌐 SSR에서는 서버용 `baseURL`을 절대 URL로
 
