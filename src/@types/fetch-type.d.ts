@@ -1,6 +1,9 @@
 /**
  * beforeRequest 인터셉터에 전달되는 요청 옵션입니다. `headers`는 항상 `Headers` 인스턴스로 읽히며,
  * 일반 객체 등 `HeadersInit`을 대입해도 즉시 `Headers`로 정규화됩니다.
+ *
+ * 헤더는 `options.headers.set()`/`append()`/`delete()`로 수정하세요. `options.headers = {...}` 대입은
+ * 인스턴스 기본 헤더와 body 직렬화 시 붙은 `Content-Type: application/json`까지 모두 교체합니다.
  */
 export type BeforeRequestOptions = Omit<RequestInit, 'headers'> & {
   get headers(): Headers;

@@ -113,7 +113,8 @@ const apiClient = appFetch.create({
     'X-Client-Version': '1.0.0',
   },
   beforeRequest: (options, { path, attempt }) => {
-    // options.headers는 항상 Headers 인스턴스입니다. (일반 객체를 대입해도 Headers로 정규화)
+    // options.headers는 항상 Headers 인스턴스입니다. 대입(options.headers = {...})은 인스턴스 기본 헤더와
+    // JSON Content-Type까지 모두 교체하므로, 헤더는 .set()/.append()/.delete()로 수정하세요.
     options.headers.set('Authorization', 'Bearer my-access-token');
     if (attempt > 1) console.info(`[retry #${attempt - 1}] ${path}`);
   },
@@ -218,7 +219,7 @@ const response3 = await appFetch('https://api.example.com/custom', {
 
 - **`timeout`은 각 시도당(Per-Attempt) 적용됩니다.** 전체 요청 예산(Total Budget)이 아니므로, `timeout: 3000, retry: 3` 설정 시 각 시도마다 3초의 타임아웃이 개별 적용되어 최악의 경우 (4회 시도 * 3초) + 재시도 지연 시간만큼 소요될 수 있습니다. 재시도를 포함한 전체 시간을 제한하려면 `signal: AbortSignal.timeout(totalMs)`를 함께 전달하세요. 재시도 대기(`delay`) 중에도 즉시 중단됩니다.
 - **`timeout`은 응답 헤더 수신까지만 적용됩니다.** 헤더를 받은 뒤 `getData()`로 본문을 읽는 구간은 타임아웃 대상이 아니므로, 본문 수신까지 제한이 필요하면 `signal` 옵션(예: `AbortSignal.timeout(ms)`)을 함께 전달하세요. `AbortSignal.any`가 없는 구형 런타임(Node 18.0~20.2, Chrome 115 이하, Safari 17.3 이하)에서도 동작하며, 이 경우 `signal` 연결은 `getData()`로 본문 소비가 끝날 때 해제됩니다. `beforeRequest` 인터셉터 실행 시간은 타임아웃에 포함됩니다.
-- **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다. 두 번째 인자 `{ path, attempt }`로 호출 경로(baseURL 결합 전)와 시도 횟수를 알 수 있습니다.
+- **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다. 두 번째 인자 `{ path, attempt }`로 호출 경로(baseURL 결합 전)와 시도 횟수를 알 수 있습니다. `options.headers`는 `.set()`/`.append()`/`.delete()`로 수정하세요. `options.headers = { ... }` 대입은 헤더 전체를 교체하므로 인스턴스 기본 헤더와 객체 body에 자동으로 붙은 `Content-Type: application/json`이 사라지고, 서버가 `415 Unsupported Media Type`을 돌려줄 수 있습니다.
 - **`afterResponse`는 최종 응답에 대해서만 1회 실행되고, 요청이 reject되면 실행되지 않습니다.** 네트워크 에러·타임아웃·abort로 끝난 요청은 `afterResponse` 없이 `onError`만 거칩니다. 로딩 표시처럼 `beforeRequest`에서 켠 상태는 `afterResponse`와 `onError` 양쪽에서 해제하세요. 시도 횟수를 세는 용도라면 `beforeRequest`와 `afterResponse`의 호출 횟수가 일치하지 않는다는 점에 유의하세요. 카운터·타이머처럼 짝이 맞아야 하는 처리는 인터셉터가 아니라 호출 전후(`try/finally`)에서 하거나, `beforeRequest`에서 `attempt === 1`일 때만 세세요.
 - **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `500`, `502`, `503`, `504` 및 네트워크 단절 에러**만 재시도합니다(`501`, `505`~`511`처럼 다시 보내도 결과가 같은 코드는 제외). 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요. `put`/`delete`는 RFC 9110상 멱등이라 기본 재시도 대상이지만, 알림 발송·파일 정리 등 부수 효과가 있는 API라면 `retry: 0`으로 두거나 서버에 멱등성 키를 도입하세요. 특히 클라이언트 `timeout`이 서버 처리 시간보다 짧으면 서버가 이전 요청을 처리하는 동안 같은 요청이 재전송됩니다.
 - **`Retry-After` 헤더를 존중합니다.** 기본 `retry`와 `exponentialBackoffRetry()`는 `Retry-After`(정수 초 또는 HTTP-date)가 있으면 `delay`/백오프 대신 그 값만큼 기다립니다. 값이 상한(기본 `retry`는 30초, 백오프는 `maxDelay`)을 넘으면 재시도하지 않고 그 응답을 그대로 반환합니다. 소수 초 등 해석할 수 없는 값은 무시합니다. 커스텀 전략에는 적용되지 않으며, 대신 `context.retryAfterMs`로 해석된 값을 받을 수 있습니다(`getDelay: (c) => c.retryAfterMs ?? 1000`). 브라우저의 cross-origin 요청에서는 서버가 `Access-Control-Expose-Headers: Retry-After`를 보내야 읽힙니다.

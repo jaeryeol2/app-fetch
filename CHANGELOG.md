@@ -2,6 +2,12 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다. 버전 규칙은 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [Unreleased]
+
+### Docs
+- `beforeRequest`에서 `options.headers = {...}` 대입은 인스턴스 기본 헤더와 자동으로 붙은 JSON `Content-Type`까지 교체하므로 `.set()`/`.append()`/`.delete()`로 수정하라는 안내 (README, `BeforeRequestOptions` JSDoc)
+- `RetryContext.method`는 요청 옵션과 무관하게 항상 대문자이고, `exponentialBackoffRetry`의 `methods`는 대소문자를 구분하지 않는다는 안내
+
 ## [2.1.0] - 2026-09-30
 
 ### ⚠️ Changed (동작 변경)
