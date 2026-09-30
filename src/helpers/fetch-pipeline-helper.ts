@@ -23,7 +23,7 @@ import { getData, releaseBodySignal } from './fetch-helper';
 const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
 
 /** 재전송 시 중복 처리 위험이 있는 메서드 */
-const NON_IDEMPOTENT_METHODS = ['POST', 'PATCH'];
+const NON_IDEMPOTENT_METHODS = new Set(['POST', 'PATCH']);
 
 /** 재시도 대기 시간의 기본 상한(ms). Retry-After가 이 값을 넘으면 재시도하지 않습니다. */
 const DEFAULT_MAX_DELAY = 30_000;
@@ -121,7 +121,8 @@ export const exponentialBackoffRetry = (config?: {
     );
     return {
       shouldRetry: true,
-      delay: jitter ? Math.round(Math.random() * backoff) : backoff,
+      // 재시도 시점 분산용 난수이며 보안 용도가 아니므로 Math.random으로 충분합니다.
+      delay: jitter ? Math.round(Math.random() * backoff) : backoff, // NOSONAR
     };
   };
 
@@ -142,7 +143,7 @@ const warnNonIdempotentBackoff = (options?: AppFetchOptions): void => {
   if (typeof strategy !== 'function' || !pendingMethodWarning.has(strategy)) {
     return;
   }
-  if (!NON_IDEMPOTENT_METHODS.includes(normalizeMethod(options))) {
+  if (!NON_IDEMPOTENT_METHODS.has(normalizeMethod(options))) {
     return;
   }
   pendingMethodWarning.delete(strategy);
@@ -178,6 +179,8 @@ export const beforeRequestHandler = async (
     : [beforeRequest];
   // buildRequestInit이 headers를 Headers로 정규화하는 accessor로 정의해 두었습니다.
   const interceptorOptions = mergeOptions as BeforeRequestOptions;
+  // 인터셉터는 등록 순서대로 직렬 실행되어야 합니다(앞 인터셉터의 헤더 변경을 다음 인터셉터가 봄).
+  // 병렬화하면 순서 계약이 깨지므로 루프 안 await은 의도된 것입니다(NOSONAR).
 
   for (const interceptor of interceptors) {
     if (signal?.aborted) {
@@ -198,14 +201,14 @@ export const beforeRequestHandler = async (
       });
 
       try {
-        await Promise.race([interceptor(interceptorOptions, context), abortPromise]);
+        await Promise.race([interceptor(interceptorOptions, context), abortPromise]); // NOSONAR
       } finally {
         if (abortListener) {
           signal.removeEventListener('abort', abortListener);
         }
       }
     } else {
-      await interceptor(interceptorOptions, context);
+      await interceptor(interceptorOptions, context); // NOSONAR
     }
   }
 };
@@ -226,10 +229,11 @@ export const afterResponseHandler = async (
       ? afterResponse
       : [afterResponse];
 
+    // 등록 순서대로 직렬 실행합니다(루프 안 await 의도됨, NOSONAR).
     for (const interceptor of interceptors) {
       const clone = response.clone();
       try {
-        await interceptor(clone);
+        await interceptor(clone); // NOSONAR
       } finally {
         // 읽지 않은 clone은 원본을 읽는 동안 tee 버퍼에 본문 전체를 쌓아 두므로 즉시 해제합니다.
         // 인터셉터 안에서 읽기를 시작했다면(bodyUsed) 그 읽기를 방해하지 않습니다.
@@ -280,8 +284,9 @@ export const onErrorHandler = async (
 ): Promise<void> => {
   if (onError) {
     const interceptors = Array.isArray(onError) ? onError : [onError];
+    // 등록 순서대로 직렬 실행합니다(루프 안 await 의도됨, NOSONAR).
     for (const interceptor of interceptors) {
-      await interceptor(error);
+      await interceptor(error); // NOSONAR
     }
   }
 };
@@ -516,7 +521,7 @@ const computeRetryDecision = async (
   // 기본 재시도 판별 (408, 429, 500, 502, 503, 504 및 네트워크 에러 대상)
   // POST/PATCH는 멱등하지 않아 재전송 시 중복 처리 위험이 있으므로 기본 재시도에서 제외합니다.
   // 필요하면 retryStrategy를 명시해 재시도할 수 있습니다.
-  const isIdempotent = !NON_IDEMPOTENT_METHODS.includes(normalizeMethod(options));
+  const isIdempotent = !NON_IDEMPOTENT_METHODS.has(normalizeMethod(options));
   const maxRetries = options?.retry ?? 0;
   const status = context.response?.status;
   const isRetryableStatus = status
