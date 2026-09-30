@@ -198,7 +198,7 @@ const response2 = await appFetch('https://api.example.com/unstable', {
     initialDelay: 100, // 최대 100ms, 200ms, 400ms (기본 full jitter로 0~계산값 사이 무작위)
     factor: 2,
     statusCodes: [500, 502, 503, 504], // 해당 서버 오류 코드에서만 선택적 재시도
-    methods: ['GET', 'PUT', 'DELETE'], // 재시도할 메서드 (지정 권장, 아래 참고)
+    // methods 기본값은 GET/HEAD/OPTIONS/PUT/DELETE. POST를 재시도하려면 methods: ['POST']처럼 명시
   }),
 });
 
@@ -223,7 +223,7 @@ const response3 = await appFetch('https://api.example.com/custom', {
 - **`afterResponse`는 최종 응답에 대해서만 1회 실행되고, 요청이 reject되면 실행되지 않습니다.** 네트워크 에러·타임아웃·abort로 끝난 요청은 `afterResponse` 없이 `onError`만 거칩니다. 로딩 표시처럼 `beforeRequest`에서 켠 상태는 `afterResponse`와 `onError` 양쪽에서 해제하세요. 시도 횟수를 세는 용도라면 `beforeRequest`와 `afterResponse`의 호출 횟수가 일치하지 않는다는 점에 유의하세요. 카운터·타이머처럼 짝이 맞아야 하는 처리는 인터셉터가 아니라 호출 전후(`try/finally`)에서 하거나, `beforeRequest`에서 `attempt === 1`일 때만 세세요.
 - **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `500`, `502`, `503`, `504` 및 네트워크 단절 에러**만 재시도합니다(`501`, `505`~`511`처럼 다시 보내도 결과가 같은 코드는 제외). 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요. `put`/`delete`는 RFC 9110상 멱등이라 기본 재시도 대상이지만, 알림 발송·파일 정리 등 부수 효과가 있는 API라면 `retry: 0`으로 두거나 서버에 멱등성 키를 도입하세요. 특히 클라이언트 `timeout`이 서버 처리 시간보다 짧으면 서버가 이전 요청을 처리하는 동안 같은 요청이 재전송됩니다.
 - **`Retry-After` 헤더를 존중합니다.** 기본 `retry`와 `exponentialBackoffRetry()`는 `Retry-After`(정수 초 또는 HTTP-date)가 있으면 `delay`/백오프 대신 그 값만큼 기다립니다. 값이 상한(기본 `retry`는 30초, 백오프는 `maxDelay`)을 넘으면 재시도하지 않고 그 응답을 그대로 반환합니다. 소수 초 등 해석할 수 없는 값은 무시합니다. 커스텀 전략에는 적용되지 않으며, 대신 `context.retryAfterMs`로 해석된 값을 받을 수 있습니다(`getDelay: (c) => c.retryAfterMs ?? 1000`). 브라우저의 cross-origin 요청에서는 서버가 `Access-Control-Expose-Headers: Retry-After`를 보내야 읽힙니다.
-- **⚠️ 커스텀 `retryStrategy`는 `post`/`patch` 제외 안전장치를 우회합니다.** 전략을 지정하면 메서드와 관계없이 전략의 판단을 따르므로, 인스턴스 기본값에 전략을 걸면 그 인스턴스의 모든 POST가 재시도되어 중복 생성될 수 있습니다. 전략 안에서 `context.method`로 직접 거르세요. `context.method`는 요청 옵션이 소문자(`'post'`)여도 항상 대문자(`'POST'`)로 정규화됩니다. `exponentialBackoffRetry()`는 `methods` 옵션으로 제한할 수 있으며, `methods` 없이 POST/PATCH를 요청하면 1회 경고합니다. **3.0.0부터 `methods` 기본값이 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)로 바뀝니다.**
+- **⚠️ 커스텀 `retryStrategy`(직접 작성한 함수/객체)는 `post`/`patch` 제외 안전장치를 우회합니다.** 전략을 지정하면 메서드와 관계없이 전략의 판단을 따르므로, 인스턴스 기본값에 전략을 걸면 그 인스턴스의 모든 POST가 재시도되어 중복 생성될 수 있습니다. 전략 안에서 `context.method`로 직접 거르세요. `context.method`는 요청 옵션이 소문자(`'post'`)여도 항상 대문자(`'POST'`)로 정규화됩니다. `exponentialBackoffRetry()`는 기본적으로 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)만 재시도하며, POST/PATCH는 `methods`에 명시해야 재시도합니다(3.0.0부터).
 - **`afterResponse` 인터셉터나 `retryStrategy`에서 발생한 예외는 재시도하지 않습니다.** `onError`를 1회 실행한 뒤 호출부로 그대로 전달됩니다.
 - **2xx 성공 응답에는 `retryStrategy`가 호출되지 않습니다.** 전략은 실패 응답(`response.ok === false`)과 네트워크 에러에 대해서만 평가되므로, `attempt`만 검사하는 전략도 성공 응답을 재요청하지 않습니다.
 - **fetch 이전 단계의 에러는 재시도하지 않습니다.** 쿼리 순환 참조, 바디 직렬화 실패, `beforeRequest` 예외는 다시 시도해도 같은 결과이므로 대기 없이 즉시 `onError` 후 전달됩니다. 단, 타임아웃은 `beforeRequest` 실행 중 발생했더라도 재시도 대상입니다.
@@ -562,7 +562,7 @@ if (res.redirected && new URL(res.url).pathname.startsWith('/login')) {
   | `initialDelay` | `number` | `100` | 초기 대기 시간 (ms, $100 \times \text{factor}^{\text{attempt}-1}$) |
   | `factor` | `number` | `2` | 지수 증가 배수 |
   | `statusCodes` | `number[]` | `[408, 429, 500, 502, 503, 504]` | 선택적 재시도 대상 HTTP 상태 코드 목록 |
-  | `methods` | `string[]` | `undefined` (모든 메서드) | 재시도할 메서드(대소문자 무관). 지정하지 않고 POST/PATCH를 요청하면 1회 경고. **3.0.0부터 기본값 GET/HEAD/OPTIONS/PUT/DELETE** |
+  | `methods` | `string[]` | `['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']` | 재시도할 메서드(대소문자 무관). POST/PATCH를 재시도하려면 명시 (3.0.0부터 기본값 변경) |
   | `jitter` | `boolean` | `true` | full jitter: 대기 시간을 0~계산값 사이에서 무작위로 골라 동시 재시도 쏠림을 방지 |
   | `maxDelay` | `number` | `30000` | 대기 시간 상한(ms). `Retry-After`가 이 값을 넘으면 재시도하지 않고 응답을 반환 |
 

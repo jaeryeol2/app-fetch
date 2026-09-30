@@ -2,6 +2,14 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다. 버전 규칙은 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [3.0.0] - 2026-09-30
+
+### ⚠️ Breaking
+- **`exponentialBackoffRetry()`의 `methods` 기본값이 멱등 메서드 `['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']`로 바뀌었습니다.** 이제 `methods`를 지정하지 않으면 POST/PATCH를 재시도하지 않습니다. 인스턴스 기본값에 백오프를 걸었을 때 모든 POST가 재시도되어 중복 생성되던 위험을 막기 위한 변경이며, [2.1.0](#210---2026-09-30)부터 경고로 예고되었습니다.
+  - 마이그레이션: POST/PATCH 재시도가 필요하면 `exponentialBackoffRetry({ methods: ['POST', 'PATCH', ...] })`처럼 명시하세요. 이미 `methods`를 지정했다면 영향이 없습니다.
+- 2.1.0에서 추가된 "`methods` 없이 POST/PATCH 요청 시 1회 경고"는 기본값 변경으로 필요 없어져 제거되었습니다.
+- 그 밖의 API와 동작(기본 `retry`, 커스텀 `retryStrategy`, 인터셉터, 타임아웃 등)은 2.1.1과 같습니다.
+
 ## [2.1.1] - 2026-09-30
 
 ### Docs

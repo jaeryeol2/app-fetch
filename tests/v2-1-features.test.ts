@@ -8,7 +8,7 @@
  * 5) RetryContext.method / retryAfterMs
  * 6) 기본 retry 경로의 Retry-After 존중과 상한 초과 시 재시도 중단
  * 7) exponentialBackoffRetry의 methods / jitter / maxDelay / Retry-After
- * 8) methods 미지정 백오프로 POST/PATCH 요청 시 요청 시점 1회 경고
+ * 8) (3.0.0) exponentialBackoffRetry 기본 methods는 멱등 메서드
  * @vitest-environment node
  */
 
@@ -228,26 +228,31 @@ describe('2.1.0 Features', () => {
     expect(fixed({ ...base, retryAfterMs: maxDelay + 1 })).toEqual({ shouldRetry: false });
   });
 
-  it('methods 없는 백오프로 POST/PATCH 요청 시 요청 시점에 전략당 1회만 경고한다', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => jsonResponse(200));
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('exponentialBackoffRetry는 기본적으로 POST/PATCH를 재시도하지 않고, methods로 명시하면 재시도한다 (3.0.0)', async () => {
     const method = pick(['post', 'patch'] as const);
-
-    const legacy = appFetch.create({ retryStrategy: exponentialBackoffRetry() });
-    await legacy(`/w1-${randomId()}`, { method, body: { id: randomId() } });
-    await legacy(`/w2-${randomId()}`, { method, body: { id: randomId() } });
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0][0])).toContain('3.0.0');
-
-    warn.mockClear();
-    const explicit = appFetch.create({ retryStrategy: exponentialBackoffRetry({ methods: ['POST', 'PATCH'] }) });
-    await explicit(`/w3-${randomId()}`, { method, body: { id: randomId() } });
-    await appFetch(`/w4-${randomId()}`, { retryStrategy: exponentialBackoffRetry() });
-    await appFetch(`/w5-${randomId()}`, {
-      method,
-      body: { id: randomId() },
-      retryStrategy: () => ({ shouldRetry: false }),
+    let calls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls++;
+      return jsonResponse(calls === 1 ? pick([502, 503, 504]) : 200);
     });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const safeDefault = appFetch.create({
+      retryStrategy: exponentialBackoffRetry({ initialDelay: 0 }),
+    });
+    await safeDefault(`/m1-${randomId()}`, { method, body: { id: randomId() } });
+    expect(calls).toBe(1);
+
+    calls = 0;
+    await safeDefault(`/m2-${randomId()}`, { method: pick(['get', 'put', 'delete'] as const) });
+    expect(calls).toBe(2);
+
+    calls = 0;
+    const explicit = appFetch.create({
+      retryStrategy: exponentialBackoffRetry({ initialDelay: 0, methods: [method] }),
+    });
+    await explicit(`/m3-${randomId()}`, { method, body: { id: randomId() } });
+    expect(calls).toBe(2);
     expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -28,11 +28,8 @@ const NON_IDEMPOTENT_METHODS = new Set(['POST', 'PATCH']);
 /** 재시도 대기 시간의 기본 상한(ms). Retry-After가 이 값을 넘으면 재시도하지 않습니다. */
 const DEFAULT_MAX_DELAY = 30_000;
 
-/**
- * `methods`를 지정하지 않은 exponentialBackoffRetry 전략 목록입니다.
- * POST/PATCH 요청 시점에 1회 경고한 뒤 제거하므로, 같은 전략은 한 번만 경고합니다.
- */
-const pendingMethodWarning = new WeakSet<RetryStrategyFunction>();
+/** exponentialBackoffRetry가 기본으로 재시도하는 멱등 메서드 */
+const DEFAULT_BACKOFF_METHODS = ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'];
 
 /**
  * 요청 메서드를 대문자로 정규화합니다. 지정하지 않으면 fetch 기본값인 GET입니다.
@@ -82,8 +79,8 @@ export const exponentialBackoffRetry = (config?: {
   factor?: number;
   statusCodes?: number[];
   /**
-   * 재시도할 메서드. 지정하지 않으면 모든 메서드를 재시도하며, POST/PATCH 요청 시 1회 경고합니다.
-   * 3.0.0부터 기본값이 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)로 바뀝니다.
+   * 재시도할 메서드(대소문자 무관). 기본값은 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)이며,
+   * POST/PATCH를 재시도하려면 명시해야 합니다.
    */
   methods?: string[];
   /** 지연에 full jitter(0~계산값 사이 무작위)를 적용할지 여부 (기본값 true) */
@@ -95,15 +92,17 @@ export const exponentialBackoffRetry = (config?: {
   const initialDelay = config?.initialDelay ?? 100;
   const factor = config?.factor ?? 2;
   const statusCodes = config?.statusCodes ?? RETRYABLE_STATUS_CODES;
-  const methods = config?.methods?.map((method) => method.toUpperCase());
+  const methods = (config?.methods ?? DEFAULT_BACKOFF_METHODS).map((method) =>
+    method.toUpperCase(),
+  );
   const jitter = config?.jitter ?? true;
   const maxDelay = config?.maxDelay ?? DEFAULT_MAX_DELAY;
 
-  const strategy: RetryStrategyFunction = (context: RetryContext) => {
+  return (context: RetryContext) => {
     if (context.attempt > maxRetries) {
       return { shouldRetry: false };
     }
-    if (methods && !methods.includes(context.method ?? 'GET')) {
+    if (!methods.includes(context.method ?? 'GET')) {
       return { shouldRetry: false };
     }
     if (context.response && !statusCodes.includes(context.response.status)) {
@@ -125,34 +124,6 @@ export const exponentialBackoffRetry = (config?: {
       delay: jitter ? Math.round(Math.random() * backoff) : backoff, // NOSONAR
     };
   };
-
-  if (!methods) {
-    pendingMethodWarning.add(strategy);
-  }
-  return strategy;
-};
-
-/**
- * `methods` 없이 만든 exponentialBackoffRetry로 POST/PATCH를 요청하면 1회 경고합니다.
- * 재시도 판단 시점이 아니라 요청 시점에 경고해야 2xx만 오는 개발 환경에서도 드러납니다.
- *
- * @param {AppFetchOptions} [options] 사용자 요청 옵션
- */
-const warnNonIdempotentBackoff = (options?: AppFetchOptions): void => {
-  const strategy = options?.retryStrategy;
-  if (typeof strategy !== 'function' || !pendingMethodWarning.has(strategy)) {
-    return;
-  }
-  if (!NON_IDEMPOTENT_METHODS.has(normalizeMethod(options))) {
-    return;
-  }
-  pendingMethodWarning.delete(strategy);
-  console.warn(
-    'app-fetch: exponentialBackoffRetry() without `methods` also retries POST/PATCH requests, ' +
-      'which may create duplicates. Starting in 3.0.0 it will retry only idempotent methods ' +
-      '(GET, HEAD, OPTIONS, PUT, DELETE) by default. Pass `methods` explicitly to keep ' +
-      'the current behavior and silence this warning.',
-  );
 };
 
 /**
@@ -556,8 +527,6 @@ export const buildRequestInit = async (
   abortController: AbortController,
   context: BeforeRequestContext,
 ): Promise<{ mergeOptions: RequestInit; disposeSignal: () => void }> => {
-  warnNonIdempotentBackoff(options);
-
   const mergeOptions: RequestInit = {
     ...options,
     baseURL: undefined,
