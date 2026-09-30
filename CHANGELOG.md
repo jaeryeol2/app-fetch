@@ -2,6 +2,12 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다. 버전 규칙은 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [3.0.1] - 2026-09-30
+
+### Changed
+- 내부 정리: 재시도 대상 메서드·상태 코드 검사를 배열 `includes`에서 `Set.has`로 변경 (SonarLint S7776). 동작 변화 없음.
+- 3.0.0 CHANGELOG 항목에 업그레이드 요약 추가.
+
 ## [3.0.0] - 2026-09-30
 
 > **업그레이드 요약**: `exponentialBackoffRetry()`를 POST/PATCH에 쓰고 있다면 `methods: ['POST', 'PATCH', ...]`를 명시하세요. 그 외에는 코드 변경이 필요 없습니다. 2.0.x에서 바로 올린다면 [2.1.0](#210---2026-09-30)의 동작 변경(재시도 허용 목록, `Retry-After` 존중, 백오프 jitter 기본 적용)도 함께 확인하세요.

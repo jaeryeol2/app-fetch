@@ -20,7 +20,7 @@ import type {
 import { getData, releaseBodySignal } from './fetch-helper';
 
 /** 기본 재시도 대상 상태 코드. 일시적 장애로 볼 수 있는 코드만 허용 목록으로 둡니다. */
-const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 
 /** 재전송 시 중복 처리 위험이 있는 메서드 */
 const NON_IDEMPOTENT_METHODS = new Set(['POST', 'PATCH']);
@@ -91,9 +91,9 @@ export const exponentialBackoffRetry = (config?: {
   const maxRetries = config?.maxRetries ?? 3;
   const initialDelay = config?.initialDelay ?? 100;
   const factor = config?.factor ?? 2;
-  const statusCodes = config?.statusCodes ?? RETRYABLE_STATUS_CODES;
-  const methods = (config?.methods ?? DEFAULT_BACKOFF_METHODS).map((method) =>
-    method.toUpperCase(),
+  const statusCodes = new Set(config?.statusCodes ?? RETRYABLE_STATUS_CODES);
+  const methods = new Set(
+    (config?.methods ?? DEFAULT_BACKOFF_METHODS).map((method) => method.toUpperCase()),
   );
   const jitter = config?.jitter ?? true;
   const maxDelay = config?.maxDelay ?? DEFAULT_MAX_DELAY;
@@ -102,10 +102,10 @@ export const exponentialBackoffRetry = (config?: {
     if (context.attempt > maxRetries) {
       return { shouldRetry: false };
     }
-    if (!methods.includes(context.method ?? 'GET')) {
+    if (!methods.has(context.method ?? 'GET')) {
       return { shouldRetry: false };
     }
-    if (context.response && !statusCodes.includes(context.response.status)) {
+    if (context.response && !statusCodes.has(context.response.status)) {
       return { shouldRetry: false };
     }
     if (context.retryAfterMs !== undefined) {
@@ -496,7 +496,7 @@ const computeRetryDecision = async (
   const maxRetries = options?.retry ?? 0;
   const status = context.response?.status;
   const isRetryableStatus = status
-    ? RETRYABLE_STATUS_CODES.includes(status)
+    ? RETRYABLE_STATUS_CODES.has(status)
     : Boolean(context.error);
   // 서버가 상한보다 오래 기다리라고 하면 재시도하지 않고 그 응답을 그대로 반환합니다.
   const retryAfterMs = context.retryAfterMs;
