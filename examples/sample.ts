@@ -88,7 +88,7 @@ const native = (path: string, options?: AppFetchOptions): Promise<Response> => {
  * @example
  * ```typescript
  * const result = await sampleFetch<UserDto>('/api/users/1');
- * if (result.status === 200) {
+ * if (result.status >= 200 && result.status < 300) {
  *   console.log('User Name:', result.data?.name);
  * }
  * ```

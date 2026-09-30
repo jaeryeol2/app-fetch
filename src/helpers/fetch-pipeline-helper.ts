@@ -15,7 +15,7 @@ import type {
   AppFetchOptions,
   AppFetchResponse,
 } from '../@types/fetch-type';
-import { getData } from './fetch-helper';
+import { getData, releaseBodySignal } from './fetch-helper';
 
 /**
  * 지수 백오프(Exponential Backoff) 기반의 재시도 전략 함수를 생성하는 팩토리 헬퍼입니다.
@@ -121,7 +121,16 @@ export const afterResponseHandler = async (
       : [afterResponse];
 
     for (const interceptor of interceptors) {
-      await interceptor(response.clone());
+      const clone = response.clone();
+      try {
+        await interceptor(clone);
+      } finally {
+        // 읽지 않은 clone은 원본을 읽는 동안 tee 버퍼에 본문 전체를 쌓아 두므로 즉시 해제합니다.
+        // 인터셉터 안에서 읽기를 시작했다면(bodyUsed) 그 읽기를 방해하지 않습니다.
+        if (!clone.bodyUsed) {
+          void clone.body?.cancel().catch(() => undefined);
+        }
+      }
     }
   }
 };
@@ -290,10 +299,14 @@ export const resolveAbortSignal = (
   }
 
   const combinedController = new AbortController();
-  const onAbort = () => combinedController.abort();
+  // AbortSignal.any처럼 원인 signal의 reason을 전달해야 AbortSignal.timeout()의 TimeoutError가 유지됩니다.
+  const onAbort = () =>
+    combinedController.abort(
+      customSignal.aborted ? customSignal.reason : timeoutSignal.reason,
+    );
 
   if (customSignal.aborted || timeoutSignal.aborted) {
-    combinedController.abort();
+    onAbort();
     return { signal: combinedController.signal, dispose: noop };
   }
 
@@ -508,6 +521,7 @@ export const handleRetryOrReturnResponse = async (
     if (retryDecision.shouldRetry) {
       // 버려지는 응답의 두 분기를 모두 취소해야 연결과 버퍼가 즉시 회수됩니다.
       void response.body?.cancel().catch(() => undefined);
+      releaseBodySignal(response);
       if (!retryClone.bodyUsed) {
         void retryClone.body?.cancel().catch(() => undefined);
       }

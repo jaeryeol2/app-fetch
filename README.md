@@ -214,10 +214,11 @@ const response3 = await appFetch('https://api.example.com/custom', {
 
 #### 💡 재시도 및 타임아웃 동작 방식 (Retry & Timeout Details)
 
-- **`timeout`은 각 시도당(Per-Attempt) 적용됩니다.** 전체 요청 예산(Total Budget)이 아니므로, `timeout: 3000, retry: 3` 설정 시 각 시도마다 3초의 타임아웃이 개별 적용되어 최악의 경우 (4회 시도 * 3초) + 재시도 지연 시간만큼 소요될 수 있습니다.
-- **`timeout`은 응답 헤더 수신까지만 적용됩니다.** 헤더를 받은 뒤 `getData()`로 본문을 읽는 구간은 타임아웃 대상이 아니므로, 본문 수신까지 제한이 필요하면 `signal` 옵션(예: `AbortSignal.timeout(ms)`)을 함께 전달하세요. `beforeRequest` 인터셉터 실행 시간은 타임아웃에 포함됩니다.
+- **`timeout`은 각 시도당(Per-Attempt) 적용됩니다.** 전체 요청 예산(Total Budget)이 아니므로, `timeout: 3000, retry: 3` 설정 시 각 시도마다 3초의 타임아웃이 개별 적용되어 최악의 경우 (4회 시도 * 3초) + 재시도 지연 시간만큼 소요될 수 있습니다. 재시도를 포함한 전체 시간을 제한하려면 `signal: AbortSignal.timeout(totalMs)`를 함께 전달하세요. 재시도 대기(`delay`) 중에도 즉시 중단됩니다.
+- **`timeout`은 응답 헤더 수신까지만 적용됩니다.** 헤더를 받은 뒤 `getData()`로 본문을 읽는 구간은 타임아웃 대상이 아니므로, 본문 수신까지 제한이 필요하면 `signal` 옵션(예: `AbortSignal.timeout(ms)`)을 함께 전달하세요. `AbortSignal.any`가 없는 구형 런타임(Node 18.0~20.2, Chrome 115 이하, Safari 17.3 이하)에서도 동작하며, 이 경우 `signal` 연결은 `getData()`로 본문 소비가 끝날 때 해제됩니다. `beforeRequest` 인터셉터 실행 시간은 타임아웃에 포함됩니다.
 - **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다.
-- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다. 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요.
+- **`afterResponse`는 최종 응답에 대해서만 1회 실행되고, 요청이 reject되면 실행되지 않습니다.** 네트워크 에러·타임아웃·abort로 끝난 요청은 `afterResponse` 없이 `onError`만 거칩니다. 로딩 표시처럼 `beforeRequest`에서 켠 상태는 `afterResponse`와 `onError` 양쪽에서 해제하세요. 시도 횟수를 세는 용도라면 `beforeRequest`와 `afterResponse`의 호출 횟수가 일치하지 않는다는 점에 유의하세요.
+- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다. 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요. `put`/`delete`는 RFC 9110상 멱등이라 기본 재시도 대상이지만, 알림 발송·파일 정리 등 부수 효과가 있는 API라면 `retry: 0`으로 두거나 서버에 멱등성 키를 도입하세요. 특히 클라이언트 `timeout`이 서버 처리 시간보다 짧으면 서버가 이전 요청을 처리하는 동안 같은 요청이 재전송됩니다.
 - **`afterResponse` 인터셉터나 `retryStrategy`에서 발생한 예외는 재시도하지 않습니다.** `onError`를 1회 실행한 뒤 호출부로 그대로 전달됩니다.
 - **2xx 성공 응답에는 `retryStrategy`가 호출되지 않습니다.** 전략은 실패 응답(`response.ok === false`)과 네트워크 에러에 대해서만 평가되므로, `attempt`만 검사하는 전략도 성공 응답을 재요청하지 않습니다.
 - **fetch 이전 단계의 에러는 재시도하지 않습니다.** 쿼리 순환 참조, 바디 직렬화 실패, `beforeRequest` 예외는 다시 시도해도 같은 결과이므로 대기 없이 즉시 `onError` 후 전달됩니다. 단, 타임아웃은 `beforeRequest` 실행 중 발생했더라도 재시도 대상입니다.
@@ -247,6 +248,8 @@ try {
 }
 ```
 
+> 💡 **성공은 `response.ok`(2xx 범위)로 판정하세요.** `status === 200`, `status === 201`처럼 특정 코드를 고정하면 서버가 생성 응답을 `200`↔`201`로 바꾸거나 `202`/`204`를 돌려줄 때 에러 없이 조용히 실패 처리됩니다. 특정 코드 비교는 실패 분기 분류(재시도 `429`/`503`, 인증 `401`/`403` 등)나 API 계약에 명시된 의미 차이(`202` 접수 vs `201` 생성)에만 쓰고, 비즈니스 결과는 HTTP 숫자가 아닌 본문의 비즈니스 코드로 구분하세요.
+
 #### 📦 `getData` 자동 지원 `Content-Type` 카테고리
 
 | 카테고리 | 매칭 `Content-Type` 패턴 | 반환 타입 | 상세 내용 |
@@ -255,7 +258,7 @@ try {
 | **바이너리 (Blob)** | `image/*`, `audio/*`, `video/*`, `font/*`, `application/octet-stream`, `pdf`, `zip`, `tar`, `gzip`, `7z`, `rar`, `epub`, `excel`, `word`, `officedocument`, `vnd.ms-` | `Blob` | 파일 다운로드, 이미지/미디어 스트림 |
 | **FormData** | `multipart/*`, `application/x-www-form-urlencoded` | `FormData` | `await response.formData()` 자동 파싱 |
 | **텍스트 / 스크립트** | `text/*`, `application/xml`, `text/xml`, `application/javascript`, `text/javascript`, `application/typescript`, `application/yaml`, `application/graphql` | `string` | `await response.text()` 자동 파싱 |
-| **Empty Body** | 상태코드 `204 No Content`, `205 Reset Content`, 헤더 `Content-Length: 0` | `null` | 바디가 없는 응답에 대해 `null` 반환 |
+| **Empty Body** | 상태코드 `204 No Content`, `205 Reset Content`, 헤더 `Content-Length: 0`, 길이 0인 본문(`Content-Length` 없는 chunked 포함) | `null` | 바디가 없는 응답에 대해 상태 코드와 무관하게 `null` 반환 |
 | **Fallback** | Content-Type 미지정 또는 알 수 없는 형식 | `string \| Blob \| null` | 텍스트 디코딩 시도 후 실패 시 `Blob` 순차적 Fallback |
 
 #### ⚠️ `getData`의 본문 소비 방식 (Body Consumption)
@@ -392,7 +395,7 @@ export const sampleFetch = Object.assign(wrap, { native });
 2. **`beforeRequest` 비동기 타임아웃 즉시 차단**:
    - 비동기 인터셉터(토큰 갱신 등) 실행 도중 타임아웃(`options.timeout`)이 초과되면 `Promise.race`를 통해 `AbortSignal` 이벤트를 감지하여 즉시 요청을 중단하고 `AbortError`를 발생시킵니다.
 3. **`response.clone()` 스트림 잠김 방지**:
-   - `afterResponse` 인터셉터에는 `response.clone()`이 전달되므로, 인터셉터에서 본문을 읽어도 이후 `getData()` 파싱에 영향을 주지 않습니다. `getData()` 자체는 원본 스트림을 한 번만 소비하고 결과를 캐시합니다.
+   - `afterResponse` 인터셉터에는 `response.clone()`이 전달되므로, 인터셉터에서 본문을 읽어도 이후 `getData()` 파싱에 영향을 주지 않습니다. 인터셉터가 반환될 때까지 읽기를 시작하지 않은 clone은 메모리 버퍼를 해제하기 위해 즉시 취소되므로, clone을 저장해 두었다가 나중에 읽지 말고 인터셉터 안에서 읽기를 시작하세요(`await` 없이 `res.text().then(...)`처럼 시작만 해도 됩니다). `getData()` 자체는 원본 스트림을 한 번만 소비하고 결과를 캐시합니다.
 4. **절대 URL의 `baseURL` 우회 차단 (자격증명 유출/SSRF 방지)**:
    - `baseURL`이 설정된 경우, **origin이 다른 `http(s)` 절대 URL은 요청 전에 에러로 차단**됩니다. 사용자 입력으로 조립된 경로(`client(req.query.path)` 등)가 인스턴스의 인증 헤더를 실은 채 외부 호스트로 나가는 것을 막습니다. 에러 메시지에는 전체 URL 대신 origin만 포함되어 쿼리의 토큰이 로그에 남지 않습니다.
    - `baseURL`과 **같은 origin**의 절대 URL(예: 페이지네이션 `next` 링크), 네트워크로 나가지 않는 `blob:`/`data:` URL, `baseURL`이 없는 호출은 그대로 허용됩니다.
@@ -426,7 +429,7 @@ const api = appFetch.create({
 });
 ```
 
-`dispatcher`는 네이티브 `fetch`에 그대로 전달되며 브라우저에서는 무시됩니다. 사내 CA 인증서는 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 환경변수로 추가합니다.
+`dispatcher`는 네이티브 `fetch`에 그대로 전달되며 브라우저에서는 무시됩니다. `app-fetch` 자체는 의존성이 없으므로 `ProxyAgent`/`Agent`를 쓰려면 소비자 프로젝트에 `undici`를 설치해야 하며, 설치한 `undici`와 Node에 내장된 `undici`의 메이저 버전이 다르면 dispatcher 인터페이스가 호환되지 않을 수 있습니다. Next.js처럼 서버 `fetch`를 패치하는 프레임워크에서는 `dispatcher`가 그대로 전달되는지도 확인하세요. 사내 CA 인증서는 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 환경변수로 추가합니다.
 
 #### 🌐 SSR에서는 서버용 `baseURL`을 절대 URL로
 
@@ -437,6 +440,19 @@ const api = appFetch.create({
   baseURL: typeof window === 'undefined' ? process.env.INTERNAL_API_URL : '/api',
 });
 ```
+
+#### 🔐 세션 만료 리다이렉트 (모놀리식 · JSP)
+
+세션 기반 서버는 세션이 만료되면 `302`로 로그인 페이지를 돌려주는데, 네이티브 `fetch`는 리다이렉트를 자동으로 따라가므로 호출부에는 `200` + `text/html` 응답이 도착합니다. `getData()`는 이를 문자열로 반환하므로 성공으로 오인하기 쉽습니다. `response.redirected`와 `response.url`로 판별하세요.
+
+```typescript
+const res = await api('/orders');
+if (res.redirected && new URL(res.url).pathname.startsWith('/login')) {
+  location.href = res.url; // 세션 만료 처리
+}
+```
+
+브라우저에서 `redirect: 'manual'`을 쓰면 `status`가 `0`인 opaque 응답이 되어 이동 위치(`Location`)를 읽을 수 없으므로, 위 방식을 권장합니다.
 
 ---
 

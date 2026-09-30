@@ -9,6 +9,10 @@
  * 6) 재시도 대기 중 사용자 abort가 반영되지 않던 문제
  * 7) 재시도로 버려지는 응답 본문이 해제되지 않던 문제
  * 8) 비 UTF-8 charset 응답이 깨지던 문제
+ * 9) AbortSignal.any 폴백 경로에서 본문 수신 중 사용자 abort가 전달되지 않던 문제
+ * 10) afterResponse에 전달된 clone을 읽지 않으면 tee 버퍼가 해제되지 않던 문제
+ * 11) AbortSignal.any 폴백 경로에서 사용자 signal의 abort reason(TimeoutError 등)이 사라지던 문제
+ * 12) Content-Length 없는 빈 본문이 null 대신 빈 문자열로 파싱되던 문제
  * @vitest-environment node
  */
 
@@ -334,5 +338,133 @@ describe('Issue Fixes Regression', () => {
     });
 
     expect(await getData(response)).toBe(`한글${suffix}`);
+  });
+
+  it.each(['native', 'fallback'] as const)(
+    '[%s] 헤더 수신 후 본문이 멈추면 사용자 signal abort로 getData()가 중단된다',
+    async (mode) => {
+      const anyRef = AbortSignal.any;
+      if (mode === 'fallback') {
+        Reflect.deleteProperty(AbortSignal, 'any');
+      }
+
+      try {
+        // 실제 런타임처럼 fetch에 전달된 signal이 abort되면 본문 스트림을 에러로 끝냅니다.
+        vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`{"id":"${randomId()}",`));
+              init?.signal?.addEventListener('abort', () =>
+                controller.error(new DOMException('aborted', 'AbortError')),
+              );
+            },
+          });
+          return new Response(body, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        });
+
+        const controller = new AbortController();
+        const response = await appFetch(`/stall-${randomId()}`, {
+          timeout: randomInt(2000, 4000),
+          signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(), randomInt(5, 30));
+
+        await expect(response.getData()).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+      } finally {
+        Object.defineProperty(AbortSignal, 'any', {
+          value: anyRef,
+          configurable: true,
+          writable: true,
+        });
+      }
+    },
+  );
+
+  it('afterResponse가 읽지 않은 clone은 해제되고, 읽기를 시작한 clone과 원본 파싱은 영향받지 않는다', async () => {
+    const payload = { id: randomId(), items: [randomId(), randomId()] };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      jsonResponse(200, payload),
+    );
+
+    let unread: Response | undefined;
+    let firedText: Promise<string> | undefined;
+    const response = await appFetch(`/clone-${randomId()}`, {
+      afterResponse: [
+        (res) => {
+          unread = res;
+        },
+        (res) => {
+          // await 없이 읽기만 시작하는 로깅 패턴
+          firedText = res.text();
+        },
+      ],
+    });
+
+    expect(unread?.bodyUsed).toBe(true);
+    expect(JSON.parse(await (firedText ?? Promise.resolve('null')))).toEqual(payload);
+    expect(await response.getData()).toEqual(payload);
+  });
+
+  it.each(['native', 'fallback'] as const)(
+    '[%s] 사용자 signal의 abort reason이 그대로 전달된다 (AbortSignal.timeout → TimeoutError)',
+    async (mode) => {
+      const anyRef = AbortSignal.any;
+      if (mode === 'fallback') {
+        Reflect.deleteProperty(AbortSignal, 'any');
+      }
+
+      try {
+        // 실제 런타임처럼 signal이 abort되면 signal.reason으로 reject합니다.
+        vi.spyOn(globalThis, 'fetch').mockImplementation(
+          (_input, init) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () =>
+                reject(init.signal?.reason),
+              );
+            }),
+        );
+
+        const controller = new AbortController();
+        const reason = new DOMException(`t-${randomId()}`, 'TimeoutError');
+        setTimeout(() => controller.abort(reason), randomInt(5, 30));
+
+        await expect(
+          appFetch(`/reason-${randomId()}`, {
+            timeout: randomInt(2000, 4000),
+            signal: controller.signal,
+          }),
+        ).rejects.toBe(reason);
+      } finally {
+        Object.defineProperty(AbortSignal, 'any', {
+          value: anyRef,
+          configurable: true,
+          writable: true,
+        });
+      }
+    },
+  );
+
+  it('Content-Length 없는 빈 본문은 상태 코드·Content-Type과 무관하게 null이다', async () => {
+    const status = pick([200, 201, 202]);
+    const contentType = pick(['application/json', 'text/plain', `application/vnd.${randomId()}+json`]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    const response = new Response(body, {
+      status,
+      headers: { 'Content-Type': contentType },
+    });
+
+    expect(response.headers.get('content-length')).toBeNull();
+    expect(await getData(response)).toBeNull();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });

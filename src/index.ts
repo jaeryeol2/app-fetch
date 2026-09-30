@@ -18,6 +18,7 @@ import {
   handleFetchError,
   handleRetryOrReturnResponse,
 } from './helpers/fetch-pipeline-helper';
+import { bindBodySignal } from './helpers/fetch-helper';
 import { composeInterceptors } from './helpers/interceptor-helper';
 
 /**
@@ -557,7 +558,14 @@ const fetchData = (
       if (requestTimer) {
         clearTimeout(requestTimer);
       }
-      releaseSignal();
+      // 여기서 해제하면 AbortSignal.any 폴백 경로에서 본문 수신 중 사용자 abort가 전달되지 않습니다.
+      // 해제는 getData()의 본문 소비 완료 시점이나 재시도로 응답을 버릴 때로 미룹니다.
+      // ponytail: getData() 없이 본문을 직접 읽으면 폴백 경로에서 리스너가 signal의 abort/GC까지 남습니다.
+      // 필요해지면 본문 스트림 종료를 감지해 해제하도록 확장합니다.
+      if (disposeSignal) {
+        bindBodySignal(response, disposeSignal);
+        disposeSignal = null;
+      }
     } catch (error) {
       if (requestTimer) {
         clearTimeout(requestTimer);

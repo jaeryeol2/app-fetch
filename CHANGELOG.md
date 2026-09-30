@@ -9,7 +9,15 @@
 - GitHub Actions CI: Node 22/24에서 lint·typecheck·build·test, Node 18/20에서 빌드된 번들 런타임 스모크 테스트
 - 테스트 스위트를 저장소에 포함 (임시 스크립트는 `tests/tmp/`, git 제외)
 
+### Fixed
+- `AbortSignal.any`가 없는 런타임(Node 18.0~20.2, Chrome 115 이하, Safari 17.3 이하)에서 응답 헤더 수신 직후 사용자 `signal` 연결이 해제되어, 본문 수신 중 `abort()`/`AbortSignal.timeout()`이 전달되지 않고 `getData()`가 무기한 대기하던 문제. 이제 `getData()`로 본문 소비가 끝나거나 재시도로 응답을 버릴 때 해제합니다.
+- `afterResponse` 인터셉터가 전달받은 `response.clone()`을 읽지 않으면, 원본을 읽는 동안 복제 분기가 본문 전체를 버퍼링해 메모리를 최대 2배로 점유하던 문제. 인터셉터가 반환될 때까지 읽기를 시작하지 않은 clone은 즉시 취소합니다.
+- `Content-Length` 헤더 없이(chunked 등) 비어 있는 본문을 `getData()`가 JSON 파싱 에러 로그와 함께 빈 문자열(`''`)로 반환하던 문제. 204와 같이 `null`로 통일합니다.
+- `AbortSignal.any`가 없는 런타임에서 사용자 `signal`의 abort `reason`이 사라져, `AbortSignal.timeout()`에 의한 중단이 `TimeoutError`가 아닌 `AbortError`로 보고되던 문제
+
 ### Docs
+- 성공은 `response.ok`(2xx)로 판정하고 특정 상태 코드 고정 비교를 피하라는 권고, `dispatcher` 사용 시 소비자 측 `undici` 설치·버전 호환 안내
+- `afterResponse`는 reject된 요청에서 실행되지 않으므로 로딩 해제 등은 `onError`에도 둘 것, 재시도 전체 시간 제한은 `signal`로 걸 것, `put`/`delete` 기본 재시도 주의, 세션 만료 리다이렉트 판별법(`response.redirected`) 안내
 - README에 기업 환경 설정 섹션 추가: 사내 프록시(`NODE_USE_ENV_PROXY`, `ProxyAgent`), 사내 CA, SSR 서버용 `baseURL` 절대 URL 안내
 - CHANGELOG 추가
 

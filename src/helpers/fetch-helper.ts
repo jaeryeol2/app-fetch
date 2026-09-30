@@ -243,6 +243,32 @@ const parseFallbackBody = (
 const parsedBodyCache = new WeakMap<Response, Promise<unknown>>();
 
 /**
+ * Response별 abort 리스너 해제 함수입니다. AbortSignal.any 폴백 경로에서는 본문을 받는 동안에도
+ * 사용자 signal의 abort가 전달되어야 하므로, 헤더 수신 시점이 아니라 본문 소비가 끝날 때 해제합니다.
+ */
+const bodySignalDisposers = new WeakMap<Response, () => void>();
+
+/**
+ * 본문 소비가 끝날 때 호출할 signal 해제 함수를 Response에 연결합니다.
+ *
+ * @param {Response} response 대상 Response
+ * @param {() => void} dispose signal 해제 함수
+ */
+export const bindBodySignal = (response: Response, dispose: () => void): void => {
+  bodySignalDisposers.set(response, dispose);
+};
+
+/**
+ * Response에 연결된 signal 해제 함수를 1회 실행합니다. (멱등)
+ *
+ * @param {Response} response 대상 Response
+ */
+export const releaseBodySignal = (response: Response): void => {
+  bodySignalDisposers.get(response)?.();
+  bodySignalDisposers.delete(response);
+};
+
+/**
  * 응답 본문을 정확히 한 번 읽어 메모리에 적재한 뒤 Content-Type에 맞게 파싱합니다.
  *
  * @template T JSON 파싱 시 기대되는 반환 타입
@@ -263,6 +289,11 @@ const parseResponseOnce = async <T>(
   // clone 대신 원본 스트림을 소비합니다. clone만 읽으면 원본 본문이 해제되지 않아
   // 연결이 풀로 회수되지 않고 버퍼가 남습니다.
   const buffer = await response.arrayBuffer();
+  // Content-Length 없이(chunked 등) 비어 있는 본문도 204와 같이 null로 통일합니다.
+  // 그대로 두면 JSON 파싱 실패 로그 후 빈 문자열이 반환되어 "빈 성공" 처리가 호출부마다 달라집니다.
+  if (buffer.byteLength === 0) {
+    return null;
+  }
 
   try {
     const parsedData = await parseBodyByContentType<T>(
@@ -299,6 +330,7 @@ export const getData = <T = unknown>(
 
   const parsing = parseResponseOnce<T>(response);
   parsedBodyCache.set(response, parsing);
+  void parsing.finally(() => releaseBodySignal(response)).catch(() => undefined);
 
   // 실패한 Promise가 캐시에 남으면 이후 재호출이 영구히 같은 에러로 실패합니다.
   // 그 사이 다른 호출이 캐시를 덮어썼을 수 있으므로 동일 참조일 때만 제거합니다.

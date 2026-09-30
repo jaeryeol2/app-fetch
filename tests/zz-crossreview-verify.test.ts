@@ -212,10 +212,11 @@ describe('주장 7 (양측 합치, CRITICAL/HIGH): 사용자 signal 에 abort �
 
       const total = 5;
       for (let i = 0; i < total; i++) {
-        await appFetch('/probe', { signal: shared });
+        await appFetch('/probe', { signal: shared }).getData();
       }
 
-      // 수정됨: 요청이 끝날 때마다 disposeSignal 이 리스너를 해제한다
+      // 수정됨: 본문 소비(getData)가 끝날 때마다 리스너를 해제한다.
+      // 본문 수신 중에도 abort가 전달되어야 하므로 헤더 수신 시점에는 해제하지 않는다.
       expect(added).toBe(total);
       expect(added - removed).toBe(0);
     } finally {
@@ -613,7 +614,7 @@ describe('Round5 (Gemini 토론 반영): 수정본에 대한 재수정 검증', 
         return origRemove(type, listener, opts);
       }) as typeof shared.removeEventListener;
 
-      await appFetch('/probe', { signal: shared, retry: 4, delay: 0 });
+      await appFetch('/probe', { signal: shared, retry: 4, delay: 0 }).getData();
 
       // 재귀 재시도 중에도 동시에 살아있는 리스너는 1개를 넘지 않아야 한다
       expect(peak).toBe(1);
