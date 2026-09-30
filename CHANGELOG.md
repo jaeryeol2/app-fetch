@@ -4,6 +4,8 @@
 
 ## [3.0.0] - 2026-09-30
 
+> **업그레이드 요약**: `exponentialBackoffRetry()`를 POST/PATCH에 쓰고 있다면 `methods: ['POST', 'PATCH', ...]`를 명시하세요. 그 외에는 코드 변경이 필요 없습니다. 2.0.x에서 바로 올린다면 [2.1.0](#210---2026-09-30)의 동작 변경(재시도 허용 목록, `Retry-After` 존중, 백오프 jitter 기본 적용)도 함께 확인하세요.
+
 ### ⚠️ Breaking
 - **`exponentialBackoffRetry()`의 `methods` 기본값이 멱등 메서드 `['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']`로 바뀌었습니다.** 이제 `methods`를 지정하지 않으면 POST/PATCH를 재시도하지 않습니다. 인스턴스 기본값에 백오프를 걸었을 때 모든 POST가 재시도되어 중복 생성되던 위험을 막기 위한 변경이며, [2.1.0](#210---2026-09-30)부터 경고로 예고되었습니다.
   - 마이그레이션: POST/PATCH 재시도가 필요하면 `exponentialBackoffRetry({ methods: ['POST', 'PATCH', ...] })`처럼 명시하세요. 이미 `methods`를 지정했다면 영향이 없습니다.
