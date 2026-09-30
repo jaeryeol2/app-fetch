@@ -2,6 +2,29 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다. 버전 규칙은 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [2.1.0] - 2026-09-30
+
+### ⚠️ Changed (동작 변경)
+- **기본 `retry`의 재시도 대상을 허용 목록 `[408, 429, 500, 502, 503, 504]`로 한정합니다.** 다시 보내도 결과가 같은 `501`, `505`, `506`, `507`, `508`, `509`, `510`, `511`은 더 이상 재시도하지 않습니다. (`exponentialBackoffRetry`의 기본 `statusCodes`와 동일)
+- **기본 `retry`와 `exponentialBackoffRetry()`가 `Retry-After` 헤더를 존중합니다.** 정수 초 또는 HTTP-date를 해석해 `delay`/백오프 대신 그만큼 기다리며, 상한(기본 `retry`는 30초, 백오프는 `maxDelay`)을 넘으면 재시도하지 않고 그 응답을 반환합니다. 소수 초 등 해석할 수 없는 값은 무시합니다. 커스텀 `retryStrategy`에는 적용되지 않습니다.
+- **`exponentialBackoffRetry()`의 대기 시간에 full jitter가 기본 적용됩니다.** 0~계산값 사이 무작위 값을 사용하며, 이전처럼 고정 값이 필요하면 `jitter: false`를 지정하세요. 계산값은 `maxDelay`(기본 30초)로 제한됩니다.
+
+### ⚠️ Deprecated
+- **`exponentialBackoffRetry()`를 `methods` 없이 쓰면 POST/PATCH도 재시도합니다. 3.0.0부터 기본값이 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)로 바뀝니다.** 2.1.0에서는 동작을 유지하되, `methods` 없이 만든 전략으로 POST/PATCH를 요청하면 요청 시점에 전략당 1회 `console.warn`을 출력합니다. 현재 동작을 유지하려면 `methods: ['POST', ...]`를 명시하세요.
+
+### Added
+- `beforeRequest` 인터셉터의 두 번째 인자 `{ path, attempt }`: 호출 경로(baseURL 결합 전)와 시도 횟수
+- `beforeRequest`의 `options.headers`가 타입과 런타임 모두 항상 `Headers`입니다. 일반 객체 등 `HeadersInit`을 대입하면 즉시 `Headers`로 정규화되며, `{ ...options }` 복사에서도 유지됩니다. `as Headers` 단언이 더 이상 필요 없습니다. (새 타입 `BeforeRequestOptions`, `BeforeRequestContext`)
+- `HttpError(message, status, data?)`: 에러 응답 본문 등을 `data`로 보존하며, `returnError()`가 이를 그대로 전달합니다(없으면 `null`).
+- `RetryContext.method`(대문자, 기본 `'GET'`)와 `RetryContext.retryAfterMs`(해석된 `Retry-After`, 상한 미적용)
+- `exponentialBackoffRetry`의 `methods`, `jitter`, `maxDelay` 옵션
+
+### Docs
+- 에러 판별 표(`TimeoutError`/`AbortError`/`TypeError`/HTTP 4xx·5xx)와 `ensureOk` 헬퍼 패턴
+- 커스텀 `retryStrategy`는 POST/PATCH 제외 안전장치를 우회한다는 경고
+- 스트리밍 응답의 idle 타임아웃 레시피, 짝이 맞아야 하는 처리(카운터 등)는 호출 전후에서 할 것
+- `examples/sample.ts`가 `HttpError`에 에러 본문을 담아 전달
+
 ## [2.0.1] - 2026-09-30
 
 ### Added

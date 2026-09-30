@@ -13,19 +13,22 @@ import type { AppFetchData } from '../@types/fetch-type';
  *
  * @author jaeryeol2
  */
-export class HttpError extends Error {
+export class HttpError<T = unknown> extends Error {
   status: number;
+  data?: T;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, data?: T) {
     super(message);
     this.status = status;
+    this.data = data;
     this.name = 'HttpError';
     Object.setPrototypeOf(this, HttpError.prototype);
   }
 }
 
 /**
- * 예외 발생 시 표준 HTTP 에러 데이터 구조체 객체({ status, message, data: null })를 반환하는 예외 처리 헬퍼 함수입니다.
+ * 예외 발생 시 표준 HTTP 에러 데이터 구조체 객체({ status, message, data })를 반환하는 예외 처리 헬퍼 함수입니다.
+ * `HttpError`에 담긴 `data`(에러 응답 본문 등)는 그대로 전달되고, 그 외에는 `null`입니다.
  *
  * @template T 반환 데이터의 generic 타입 (기본값: null)
  * @param {unknown} error 발생한 예외 객체 (HttpError, Error 또는 기타 타입)
@@ -44,7 +47,7 @@ export const returnError = <T = null>(
     return {
       status: error.status,
       message: error.message,
-      data: null,
+      data: (error.data ?? null) as T | null,
     };
   }
   if (error instanceof Error) {

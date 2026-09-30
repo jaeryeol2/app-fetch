@@ -187,6 +187,7 @@ describe('Hardcore Edge-case & Stress Testing', () => {
         initialDelay: 10,
         factor: 2,
         statusCodes: [503],
+        jitter: false,
       }),
     });
 

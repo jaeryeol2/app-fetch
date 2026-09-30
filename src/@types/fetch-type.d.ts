@@ -1,5 +1,23 @@
+/**
+ * beforeRequest 인터셉터에 전달되는 요청 옵션입니다. `headers`는 항상 `Headers` 인스턴스로 읽히며,
+ * 일반 객체 등 `HeadersInit`을 대입해도 즉시 `Headers`로 정규화됩니다.
+ */
+export type BeforeRequestOptions = Omit<RequestInit, 'headers'> & {
+  get headers(): Headers;
+  set headers(value: HeadersInit);
+};
+
+/** beforeRequest 인터셉터에 전달되는 요청 맥락입니다. */
+export interface BeforeRequestContext {
+  /** 호출 시 전달한 경로 (baseURL 결합 전) */
+  path: string;
+  /** 현재 시도 횟수 (1부터 시작, 재시도마다 증가) */
+  attempt: number;
+}
+
 export type BeforeRequestInterceptorType = (
-  options: RequestInit,
+  options: BeforeRequestOptions,
+  context: BeforeRequestContext,
 ) => void | Promise<void>;
 
 export type AfterResponseInterceptorType = (
@@ -19,6 +37,13 @@ export interface RetryContext {
   error?: unknown;
   attempt: number;
   maxRetries: number;
+  /** 대문자로 정규화된 요청 메서드 (지정하지 않으면 'GET') */
+  method?: string;
+  /**
+   * 응답의 `Retry-After` 헤더를 밀리초로 해석한 값 (상한 미적용).
+   * 헤더가 없거나 해석할 수 없으면 undefined, 이미 지난 날짜면 0입니다.
+   */
+  retryAfterMs?: number;
 }
 
 export type RetryStrategyFunction = (
@@ -80,12 +105,14 @@ export interface BodyFetchOptions extends BaseFetchOptions {
   body?: Record<string, unknown> | BodyInit;
 }
 
-export interface HttpErrorType extends Error {
+export interface HttpErrorType<T = unknown> extends Error {
   status: number;
+  /** 에러 응답 본문 등 호출부가 보존할 데이터 */
+  data?: T;
 }
 
 export interface HttpErrorConstructorType {
-  new (message: string, status: number): HttpErrorType;
+  new <T = unknown>(message: string, status: number, data?: T): HttpErrorType<T>;
 }
 
 export type AppFetchOptions = QueryFetchOptions | BodyFetchOptions;

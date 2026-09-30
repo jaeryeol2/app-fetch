@@ -547,6 +547,7 @@ const fetchData = (
         options,
         mergeHeaders,
         abortController,
+        { path, attempt: attemptCount },
       );
       const mergeOptions = built.mergeOptions;
       disposeSignal = built.disposeSignal;
@@ -698,6 +699,8 @@ export const appFetch = Object.assign(
 );
 
 export type {
+  BeforeRequestContext,
+  BeforeRequestOptions,
   BodyFetchOptions,
   HttpBodyMethod,
   HttpMethod,

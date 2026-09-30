@@ -112,9 +112,10 @@ const apiClient = appFetch.create({
   headers: {
     'X-Client-Version': '1.0.0',
   },
-  beforeRequest: (options) => {
-    const headers = options.headers as Headers;
-    headers.set('Authorization', 'Bearer my-access-token');
+  beforeRequest: (options, { path, attempt }) => {
+    // options.headers는 항상 Headers 인스턴스입니다. (일반 객체를 대입해도 Headers로 정규화)
+    options.headers.set('Authorization', 'Bearer my-access-token');
+    if (attempt > 1) console.info(`[retry #${attempt - 1}] ${path}`);
   },
   onError: (error) => {
     console.error('[API Error Logged]:', error);
@@ -185,7 +186,7 @@ import { appFetch, exponentialBackoffRetry } from 'app-fetch';
 // 1. 기본 재시도 옵션 사용 (하위 호환성 보장)
 const response1 = await appFetch('https://api.example.com/flaky', {
   timeout: 2000, // 시도당(per-attempt) 2초 타임아웃
-  retry: 3,      // 서버 오류(5xx, 408, 429) 또는 네트워크 에러 시 최대 3회 재시도
+  retry: 3,      // 408, 429, 500, 502, 503, 504 또는 네트워크 에러 시 최대 3회 재시도
   delay: 500,    // 재시도 대기 간격 500ms
 });
 
@@ -193,9 +194,10 @@ const response1 = await appFetch('https://api.example.com/flaky', {
 const response2 = await appFetch('https://api.example.com/unstable', {
   retryStrategy: exponentialBackoffRetry({
     maxRetries: 3,
-    initialDelay: 100, // 100ms, 200ms, 400ms 지수 백오프
+    initialDelay: 100, // 최대 100ms, 200ms, 400ms (기본 full jitter로 0~계산값 사이 무작위)
     factor: 2,
     statusCodes: [500, 502, 503, 504], // 해당 서버 오류 코드에서만 선택적 재시도
+    methods: ['GET', 'PUT', 'DELETE'], // 재시도할 메서드 (지정 권장, 아래 참고)
   }),
 });
 
@@ -216,9 +218,11 @@ const response3 = await appFetch('https://api.example.com/custom', {
 
 - **`timeout`은 각 시도당(Per-Attempt) 적용됩니다.** 전체 요청 예산(Total Budget)이 아니므로, `timeout: 3000, retry: 3` 설정 시 각 시도마다 3초의 타임아웃이 개별 적용되어 최악의 경우 (4회 시도 * 3초) + 재시도 지연 시간만큼 소요될 수 있습니다. 재시도를 포함한 전체 시간을 제한하려면 `signal: AbortSignal.timeout(totalMs)`를 함께 전달하세요. 재시도 대기(`delay`) 중에도 즉시 중단됩니다.
 - **`timeout`은 응답 헤더 수신까지만 적용됩니다.** 헤더를 받은 뒤 `getData()`로 본문을 읽는 구간은 타임아웃 대상이 아니므로, 본문 수신까지 제한이 필요하면 `signal` 옵션(예: `AbortSignal.timeout(ms)`)을 함께 전달하세요. `AbortSignal.any`가 없는 구형 런타임(Node 18.0~20.2, Chrome 115 이하, Safari 17.3 이하)에서도 동작하며, 이 경우 `signal` 연결은 `getData()`로 본문 소비가 끝날 때 해제됩니다. `beforeRequest` 인터셉터 실행 시간은 타임아웃에 포함됩니다.
-- **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다.
-- **`afterResponse`는 최종 응답에 대해서만 1회 실행되고, 요청이 reject되면 실행되지 않습니다.** 네트워크 에러·타임아웃·abort로 끝난 요청은 `afterResponse` 없이 `onError`만 거칩니다. 로딩 표시처럼 `beforeRequest`에서 켠 상태는 `afterResponse`와 `onError` 양쪽에서 해제하세요. 시도 횟수를 세는 용도라면 `beforeRequest`와 `afterResponse`의 호출 횟수가 일치하지 않는다는 점에 유의하세요.
-- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `5xx` 서버 에러 및 네트워크 단절 에러**만 재시도합니다. 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요. `put`/`delete`는 RFC 9110상 멱등이라 기본 재시도 대상이지만, 알림 발송·파일 정리 등 부수 효과가 있는 API라면 `retry: 0`으로 두거나 서버에 멱등성 키를 도입하세요. 특히 클라이언트 `timeout`이 서버 처리 시간보다 짧으면 서버가 이전 요청을 처리하는 동안 같은 요청이 재전송됩니다.
+- **`beforeRequest`는 매 재시도 시에도 실행됩니다.** 재시도 시에도 인터셉터가 다시 실행되므로, 토큰 갱신이나 헤더 주입이 재시도 요청에서도 온전히 유지됩니다. 두 번째 인자 `{ path, attempt }`로 호출 경로(baseURL 결합 전)와 시도 횟수를 알 수 있습니다.
+- **`afterResponse`는 최종 응답에 대해서만 1회 실행되고, 요청이 reject되면 실행되지 않습니다.** 네트워크 에러·타임아웃·abort로 끝난 요청은 `afterResponse` 없이 `onError`만 거칩니다. 로딩 표시처럼 `beforeRequest`에서 켠 상태는 `afterResponse`와 `onError` 양쪽에서 해제하세요. 시도 횟수를 세는 용도라면 `beforeRequest`와 `afterResponse`의 호출 횟수가 일치하지 않는다는 점에 유의하세요. 카운터·타이머처럼 짝이 맞아야 하는 처리는 인터셉터가 아니라 호출 전후(`try/finally`)에서 하거나, `beforeRequest`에서 `attempt === 1`일 때만 세세요.
+- **기본 재시도 필터링:** 기본 `retry: N` 옵션은 `400`, `401`, `404` 등 일반 4xx 클라이언트 에러를 재시도하지 않으며, 일시적 복구 가능성이 있는 **`408`, `429`, `500`, `502`, `503`, `504` 및 네트워크 단절 에러**만 재시도합니다(`501`, `505`~`511`처럼 다시 보내도 결과가 같은 코드는 제외). 또한 멱등하지 않은 **`post`/`patch` 요청은 중복 처리 위험 때문에 기본 `retry` 대상에서 제외**됩니다. 이 요청들을 재시도하려면 `retryStrategy`(예: `exponentialBackoffRetry()`)를 명시하세요. `put`/`delete`는 RFC 9110상 멱등이라 기본 재시도 대상이지만, 알림 발송·파일 정리 등 부수 효과가 있는 API라면 `retry: 0`으로 두거나 서버에 멱등성 키를 도입하세요. 특히 클라이언트 `timeout`이 서버 처리 시간보다 짧으면 서버가 이전 요청을 처리하는 동안 같은 요청이 재전송됩니다.
+- **`Retry-After` 헤더를 존중합니다.** 기본 `retry`와 `exponentialBackoffRetry()`는 `Retry-After`(정수 초 또는 HTTP-date)가 있으면 `delay`/백오프 대신 그 값만큼 기다립니다. 값이 상한(기본 `retry`는 30초, 백오프는 `maxDelay`)을 넘으면 재시도하지 않고 그 응답을 그대로 반환합니다. 소수 초 등 해석할 수 없는 값은 무시합니다. 커스텀 전략에는 적용되지 않으며, 대신 `context.retryAfterMs`로 해석된 값을 받을 수 있습니다(`getDelay: (c) => c.retryAfterMs ?? 1000`). 브라우저의 cross-origin 요청에서는 서버가 `Access-Control-Expose-Headers: Retry-After`를 보내야 읽힙니다.
+- **⚠️ 커스텀 `retryStrategy`는 `post`/`patch` 제외 안전장치를 우회합니다.** 전략을 지정하면 메서드와 관계없이 전략의 판단을 따르므로, 인스턴스 기본값에 전략을 걸면 그 인스턴스의 모든 POST가 재시도되어 중복 생성될 수 있습니다. 전략 안에서 `context.method`(대문자)로 직접 거르세요. `exponentialBackoffRetry()`는 `methods` 옵션으로 제한할 수 있으며, `methods` 없이 POST/PATCH를 요청하면 1회 경고합니다. **3.0.0부터 `methods` 기본값이 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)로 바뀝니다.**
 - **`afterResponse` 인터셉터나 `retryStrategy`에서 발생한 예외는 재시도하지 않습니다.** `onError`를 1회 실행한 뒤 호출부로 그대로 전달됩니다.
 - **2xx 성공 응답에는 `retryStrategy`가 호출되지 않습니다.** 전략은 실패 응답(`response.ok === false`)과 네트워크 에러에 대해서만 평가되므로, `attempt`만 검사하는 전략도 성공 응답을 재요청하지 않습니다.
 - **fetch 이전 단계의 에러는 재시도하지 않습니다.** 쿼리 순환 참조, 바디 직렬화 실패, `beforeRequest` 예외는 다시 시도해도 같은 결과이므로 대기 없이 즉시 `onError` 후 전달됩니다. 단, 타임아웃은 `beforeRequest` 실행 중 발생했더라도 재시도 대상입니다.
@@ -248,6 +252,33 @@ try {
 }
 ```
 
+#### 🧭 에러 판별 (Error Classification)
+
+| 상황 | 판별 방법 | 비고 |
+| :--- | :--- | :--- |
+| `timeout` 초과 | `error.name === 'TimeoutError'` | 메시지 `Request Timeout. time : {ms}ms`, 원본은 `error.cause` |
+| `signal: AbortSignal.timeout(ms)` 초과 | `error.name === 'TimeoutError'` | 런타임의 `DOMException`이 그대로 전달됨 |
+| 사용자 취소 (`controller.abort()`) | `error.name === 'AbortError'` | |
+| 네트워크 계열 실패 | `error.name === 'TypeError'` | 단절·DNS 실패·브라우저 CORS 차단을 구분할 수 없음. 메시지는 런타임마다 다르므로(Node `fetch failed`, Chrome `Failed to fetch`, Safari `Load failed`) name으로만 판별 |
+| HTTP 4xx/5xx | `response.ok === false`, `response.status` | 예외가 아니라 정상 resolve되는 응답입니다 |
+
+HTTP 에러를 예외로 다루고 싶다면 헬퍼 하나로 변환하세요. `HttpError`의 세 번째 인자 `data`에 에러 본문을 담으면 `returnError()`가 그대로 전달합니다.
+
+```typescript
+const ensureOk = async (response: Response): Promise<Response> => {
+  if (!response.ok) {
+    throw new HttpError(`HTTP ${response.status}`, response.status, await getData(response));
+  }
+  return response;
+};
+
+try {
+  const data = await getData(await ensureOk(await api('/orders')));
+} catch (error) {
+  const { status, message, data } = returnError(error); // data = 백엔드 에러 본문
+}
+```
+
 > 💡 **성공은 `response.ok`(2xx 범위)로 판정하세요.** `status === 200`, `status === 201`처럼 특정 코드를 고정하면 서버가 생성 응답을 `200`↔`201`로 바꾸거나 `202`/`204`를 돌려줄 때 에러 없이 조용히 실패 처리됩니다. 특정 코드 비교는 실패 분기 분류(재시도 `429`/`503`, 인증 `401`/`403` 등)나 API 계약에 명시된 의미 차이(`202` 접수 vs `201` 생성)에만 쓰고, 비즈니스 결과는 HTTP 숫자가 아닌 본문의 비즈니스 코드로 구분하세요.
 
 #### 📦 `getData` 자동 지원 `Content-Type` 카테고리
@@ -260,6 +291,26 @@ try {
 | **텍스트 / 스크립트** | `text/*`, `application/xml`, `text/xml`, `application/javascript`, `text/javascript`, `application/typescript`, `application/yaml`, `application/graphql` | `string` | `await response.text()` 자동 파싱 |
 | **Empty Body** | 상태코드 `204 No Content`, `205 Reset Content`, 헤더 `Content-Length: 0`, 길이 0인 본문(`Content-Length` 없는 chunked 포함) | `null` | 바디가 없는 응답에 대해 상태 코드와 무관하게 `null` 반환 |
 | **Fallback** | Content-Type 미지정 또는 알 수 없는 형식 | `string \| Blob \| null` | 텍스트 디코딩 시도 후 실패 시 `Blob` 순차적 Fallback |
+
+#### ⏱️ 스트리밍 응답의 idle 타임아웃 (레시피)
+
+`timeout`은 헤더 수신까지, `AbortSignal.timeout()`은 전체 시간을 제한합니다. SSE처럼 본문이 길게 이어지는 스트리밍 응답에서 "N ms 동안 데이터가 한 번도 오지 않으면 중단"이 필요하면, 청크를 받을 때마다 타이머를 다시 거세요.
+
+```typescript
+const controller = new AbortController();
+const response = await api('/stream', { signal: controller.signal });
+const reader = response.body!.getReader();
+let idle = setTimeout(() => controller.abort(new DOMException('Body idle', 'TimeoutError')), 10_000);
+try {
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(new DOMException('Body idle', 'TimeoutError')), 10_000);
+    handle(chunk.value);
+  }
+} finally {
+  clearTimeout(idle);
+}
+```
 
 #### ⚠️ `getData`의 본문 소비 방식 (Body Consumption)
 
@@ -289,7 +340,7 @@ const reader = stream.body?.getReader();
 >
 > ```typescript
 > // ❌ SSR에서 위험: 요청마다 전역 레지스트리를 덮어씀
-> setInterceptors(globalInterceptors, { beforeRequest: (o) => (o.headers as Headers).set('Authorization', `Bearer ${userToken}`) });
+> setInterceptors(globalInterceptors, { beforeRequest: (o) => o.headers.set('Authorization', `Bearer ${userToken}`) });
 >
 > // ✅ 요청 단위로 전달
 > await sampleFetch('/me', { headers: { Authorization: `Bearer ${userToken}` } });
@@ -487,12 +538,12 @@ if (res.redirected && new URL(res.url).pathname.startsWith('/login')) {
 | `body` | `Record<string, unknown> \| BodyInit` | `undefined` | POST / PUT / PATCH / DELETE 요청 시 전송할 바디 (Object는 자동 JSON 직렬화, GET / HEAD에서는 제거됨) |
 | `headers` | `HeadersInit` | `undefined` | 요청 헤더 (`mergeHeaders`를 통해 네이티브 Headers 속성 유지) |
 | `timeout` | `number` | `3000` | 각 시도당(per-attempt) 요청 타임아웃 (ms) |
-| `retry` | `number` | `0` | 일시적 오류(408, 429, 5xx 및 네트워크 에러) 시 단순 재시도 횟수 (`post`/`patch`는 제외, 필요 시 `retryStrategy` 사용) |
+| `retry` | `number` | `0` | 일시적 오류(408, 429, 500, 502, 503, 504 및 네트워크 에러) 시 단순 재시도 횟수 (`post`/`patch`는 제외, `Retry-After` 존중) |
 | `delay` | `number` | `0` | 단순 재시도 대기 간격 (ms) |
-| `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 (실패 응답과 네트워크 에러에만 호출, 2xx에는 호출되지 않음) |
+| `retryStrategy` | `RetryStrategy` | `undefined` | Strategy Pattern 기반 커스텀 재시도 전략 함수/객체 (실패 응답과 네트워크 에러에만 호출, 2xx에는 호출되지 않음). `context`로 `{ response, error, attempt, maxRetries, method, retryAfterMs }`를 받으며, 메서드 안전장치를 우회하므로 `method`로 직접 거를 것 |
 | `dispatcher` | `unknown` | `undefined` | Node.js(undici) 전용 디스패처. 사내 프록시용 `ProxyAgent` 등을 네이티브 `fetch`에 전달 (브라우저에서는 무시) |
 | `signal` | `AbortSignal` | `undefined` | 외부 AbortSignal (내부 타임아웃 Signal과 `AbortSignal.any`로 자동 합성, 취소 시 재시도 즉시 중단) |
-| `beforeRequest` | `BeforeRequestInterceptorType \| BeforeRequestInterceptorType[]` | `undefined` | 요청 전송 전 실행되는 인터셉터 (매 재시도 시에도 재실행) |
+| `beforeRequest` | `BeforeRequestInterceptorType \| BeforeRequestInterceptorType[]` | `undefined` | 요청 전송 전 실행되는 인터셉터 (매 재시도 시에도 재실행). `(options, { path, attempt })`를 받으며 `options.headers`는 항상 `Headers` |
 | `afterResponse` | `AfterResponseInterceptorType \| AfterResponseInterceptorType[]` | `undefined` | 응답 수신 직후 실행되는 인터셉터 (`response.clone()` 제공) |
 | `onError` | `OnErrorType \| OnErrorType[]` | `undefined` | 통신 실패, 타임아웃, `beforeRequest`/`afterResponse`/`retryStrategy` 예외, 쿼리·바디 직렬화 실패 시 요청당 1회 실행되는 에러 인터셉터 (HTTP 4xx/5xx 응답은 예외가 아니므로 호출되지 않음) |
 
@@ -507,6 +558,9 @@ if (res.redirected && new URL(res.url).pathname.startsWith('/login')) {
   | `initialDelay` | `number` | `100` | 초기 대기 시간 (ms, $100 \times \text{factor}^{\text{attempt}-1}$) |
   | `factor` | `number` | `2` | 지수 증가 배수 |
   | `statusCodes` | `number[]` | `[408, 429, 500, 502, 503, 504]` | 선택적 재시도 대상 HTTP 상태 코드 목록 |
+  | `methods` | `string[]` | `undefined` (모든 메서드) | 재시도할 메서드. 지정하지 않고 POST/PATCH를 요청하면 1회 경고. **3.0.0부터 기본값 GET/HEAD/OPTIONS/PUT/DELETE** |
+  | `jitter` | `boolean` | `true` | full jitter: 대기 시간을 0~계산값 사이에서 무작위로 골라 동시 재시도 쏠림을 방지 |
+  | `maxDelay` | `number` | `30000` | 대기 시간 상한(ms). `Retry-After`가 이 값을 넘으면 재시도하지 않고 응답을 반환 |
 
 - **`getData<T>(response: Response): Promise<T | Blob | FormData | string | null>`**  
   Response 헤더의 `Content-Type`을 기반으로 데이터를 적절한 타입(JSON, Blob, FormData, Text 등)으로 자동 파싱하는 헬퍼입니다.
@@ -516,8 +570,8 @@ if (res.redirected && new URL(res.url).pathname.startsWith('/login')) {
   대상 인터셉터 레지스트리 객체에 새로운 인터셉터 목록을 안전하게 일괄 등록합니다.
 - **`mergeFetchOptions(mergeInterceptors, options): AppFetchOptions`**  
   글로벌 인터셉터와 요청별 개별 옵션을 결합합니다.
-- **`HttpError`**  
-  HTTP 상태 코드(`status`)와 메시지(`message`)를 보존하는 전용 Error 클래스입니다.
+- **`HttpError<T>(message, status, data?)`**  
+  HTTP 상태 코드(`status`), 메시지(`message`), 선택적 데이터(`data`, 에러 응답 본문 등)를 보존하는 전용 Error 클래스입니다. `returnError()`는 `data`를 그대로 전달합니다(없으면 `null`).
 - **`returnError<T = null>(error: unknown): { status: number; message: string; data: T | null }`**  
   발생한 예외(Error 및 HttpError) 객체를 안전한 표준 에러 구조체(`{ status, message, data: null }`)로 일괄 변환합니다.
 

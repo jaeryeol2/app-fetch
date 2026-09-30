@@ -7,7 +7,9 @@
 
 import type {
   AfterResponseInterceptorType,
+  BeforeRequestContext,
   BeforeRequestInterceptorType,
+  BeforeRequestOptions,
   OnErrorType,
   RetryContext,
   RetryStrategy,
@@ -17,11 +19,60 @@ import type {
 } from '../@types/fetch-type';
 import { getData, releaseBodySignal } from './fetch-helper';
 
+/** 기본 재시도 대상 상태 코드. 일시적 장애로 볼 수 있는 코드만 허용 목록으로 둡니다. */
+const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
+
+/** 재전송 시 중복 처리 위험이 있는 메서드 */
+const NON_IDEMPOTENT_METHODS = ['POST', 'PATCH'];
+
+/** 재시도 대기 시간의 기본 상한(ms). Retry-After가 이 값을 넘으면 재시도하지 않습니다. */
+const DEFAULT_MAX_DELAY = 30_000;
+
+/**
+ * `methods`를 지정하지 않은 exponentialBackoffRetry 전략 목록입니다.
+ * POST/PATCH 요청 시점에 1회 경고한 뒤 제거하므로, 같은 전략은 한 번만 경고합니다.
+ */
+const pendingMethodWarning = new WeakSet<RetryStrategyFunction>();
+
+/**
+ * 요청 메서드를 대문자로 정규화합니다. 지정하지 않으면 fetch 기본값인 GET입니다.
+ *
+ * @param {AppFetchOptions} [options] 사용자 요청 옵션
+ * @returns {string} 대문자 메서드
+ */
+const normalizeMethod = (options?: AppFetchOptions): string =>
+  (options?.method ?? 'get').toUpperCase();
+
+/**
+ * `Retry-After` 헤더 값을 밀리초로 해석합니다.
+ * 정수 초(delay-seconds) 또는 HTTP-date만 허용하며, 소수 초 등 그 밖의 값은 무시합니다.
+ *
+ * @param {string | null} value Retry-After 헤더 값
+ * @returns {number | undefined} 대기 시간(ms). 해석할 수 없으면 undefined, 지난 날짜면 0
+ */
+const parseRetryAfter = (value: string | null): number | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed) * 1000;
+  }
+  // HTTP-date는 항상 요일·월 이름을 포함합니다. 문자가 없는 값('1.5' 등)은
+  // Date.parse가 임의의 날짜로 해석하므로 거부합니다.
+  if (!/[a-z]/i.test(trimmed)) {
+    return undefined;
+  }
+  const time = Date.parse(trimmed);
+  return Number.isNaN(time) ? undefined : Math.max(0, time - Date.now());
+};
+
 /**
  * 지수 백오프(Exponential Backoff) 기반의 재시도 전략 함수를 생성하는 팩토리 헬퍼입니다.
+ * `Retry-After`가 있으면 그 값을 우선 사용하고, `maxDelay`를 넘으면 재시도하지 않습니다.
  *
  * @pattern Strategy Pattern - HTTP 상태 코드 및 재시도 시도 횟수에 따른 지수 백오프 지연 알고리즘 전략 캡슐화
- * @param {object} [config] 백오프 설정 (maxRetries, initialDelay, factor, statusCodes)
+ * @param {object} [config] 백오프 설정 (maxRetries, initialDelay, factor, statusCodes, methods, jitter, maxDelay)
  * @returns {RetryStrategyFunction} 재시도 전략 함수
  * @author jaeryeol2
  */
@@ -30,27 +81,77 @@ export const exponentialBackoffRetry = (config?: {
   initialDelay?: number;
   factor?: number;
   statusCodes?: number[];
+  /**
+   * 재시도할 메서드. 지정하지 않으면 모든 메서드를 재시도하며, POST/PATCH 요청 시 1회 경고합니다.
+   * 3.0.0부터 기본값이 멱등 메서드(GET, HEAD, OPTIONS, PUT, DELETE)로 바뀝니다.
+   */
+  methods?: string[];
+  /** 지연에 full jitter(0~계산값 사이 무작위)를 적용할지 여부 (기본값 true) */
+  jitter?: boolean;
+  /** 지연 상한(ms). Retry-After가 이 값을 넘으면 재시도하지 않습니다. (기본값 30000) */
+  maxDelay?: number;
 }): RetryStrategyFunction => {
   const maxRetries = config?.maxRetries ?? 3;
   const initialDelay = config?.initialDelay ?? 100;
   const factor = config?.factor ?? 2;
-  const statusCodes = config?.statusCodes ?? [408, 429, 500, 502, 503, 504];
+  const statusCodes = config?.statusCodes ?? RETRYABLE_STATUS_CODES;
+  const methods = config?.methods?.map((method) => method.toUpperCase());
+  const jitter = config?.jitter ?? true;
+  const maxDelay = config?.maxDelay ?? DEFAULT_MAX_DELAY;
 
-  return (context: RetryContext) => {
+  const strategy: RetryStrategyFunction = (context: RetryContext) => {
     if (context.attempt > maxRetries) {
       return { shouldRetry: false };
     }
-
-    if (context.response) {
-      const isTargetStatus = statusCodes.includes(context.response.status);
-      if (!isTargetStatus) {
-        return { shouldRetry: false };
-      }
+    if (methods && !methods.includes(context.method ?? 'GET')) {
+      return { shouldRetry: false };
+    }
+    if (context.response && !statusCodes.includes(context.response.status)) {
+      return { shouldRetry: false };
+    }
+    if (context.retryAfterMs !== undefined) {
+      return context.retryAfterMs > maxDelay
+        ? { shouldRetry: false }
+        : { shouldRetry: true, delay: context.retryAfterMs };
     }
 
-    const delay = initialDelay * Math.pow(factor, context.attempt - 1);
-    return { shouldRetry: true, delay };
+    const backoff = Math.min(
+      initialDelay * Math.pow(factor, context.attempt - 1),
+      maxDelay,
+    );
+    return {
+      shouldRetry: true,
+      delay: jitter ? Math.round(Math.random() * backoff) : backoff,
+    };
   };
+
+  if (!methods) {
+    pendingMethodWarning.add(strategy);
+  }
+  return strategy;
+};
+
+/**
+ * `methods` 없이 만든 exponentialBackoffRetry로 POST/PATCH를 요청하면 1회 경고합니다.
+ * 재시도 판단 시점이 아니라 요청 시점에 경고해야 2xx만 오는 개발 환경에서도 드러납니다.
+ *
+ * @param {AppFetchOptions} [options] 사용자 요청 옵션
+ */
+const warnNonIdempotentBackoff = (options?: AppFetchOptions): void => {
+  const strategy = options?.retryStrategy;
+  if (typeof strategy !== 'function' || !pendingMethodWarning.has(strategy)) {
+    return;
+  }
+  if (!NON_IDEMPOTENT_METHODS.includes(normalizeMethod(options))) {
+    return;
+  }
+  pendingMethodWarning.delete(strategy);
+  console.warn(
+    'app-fetch: exponentialBackoffRetry() without `methods` also retries POST/PATCH requests, ' +
+      'which may create duplicates. Starting in 3.0.0 it will retry only idempotent methods ' +
+      '(GET, HEAD, OPTIONS, PUT, DELETE) by default. Pass `methods` explicitly to keep ' +
+      'the current behavior and silence this warning.',
+  );
 };
 
 /**
@@ -58,12 +159,15 @@ export const exponentialBackoffRetry = (config?: {
  *
  * @param {RequestInit} mergeOptions fetch 요청 옵션 객체
  * @param {BeforeRequestInterceptorType | BeforeRequestInterceptorType[]} [beforeRequest] 인터셉터 목록
+ * @param {AbortSignal} [signal] 인터셉터 대기를 중단할 signal
+ * @param {BeforeRequestContext} context 요청 경로와 시도 횟수
  * @author jaeryeol2
  */
 export const beforeRequestHandler = async (
   mergeOptions: RequestInit,
-  beforeRequest?: BeforeRequestInterceptorType | BeforeRequestInterceptorType[],
-  signal?: AbortSignal,
+  beforeRequest: BeforeRequestInterceptorType | BeforeRequestInterceptorType[] | undefined,
+  signal: AbortSignal | undefined,
+  context: BeforeRequestContext,
 ): Promise<void> => {
   if (!beforeRequest) {
     return;
@@ -72,6 +176,8 @@ export const beforeRequestHandler = async (
   const interceptors = Array.isArray(beforeRequest)
     ? beforeRequest
     : [beforeRequest];
+  // buildRequestInit이 headers를 Headers로 정규화하는 accessor로 정의해 두었습니다.
+  const interceptorOptions = mergeOptions as BeforeRequestOptions;
 
   for (const interceptor of interceptors) {
     if (signal?.aborted) {
@@ -92,14 +198,14 @@ export const beforeRequestHandler = async (
       });
 
       try {
-        await Promise.race([interceptor(mergeOptions), abortPromise]);
+        await Promise.race([interceptor(interceptorOptions, context), abortPromise]);
       } finally {
         if (abortListener) {
           signal.removeEventListener('abort', abortListener);
         }
       }
     } else {
-      await interceptor(mergeOptions);
+      await interceptor(interceptorOptions, context);
     }
   }
 };
@@ -407,19 +513,25 @@ const computeRetryDecision = async (
     }
   }
 
-  // 기본 재시도 판별 (408, 429, 5xx 및 네트워크 에러 대상)
+  // 기본 재시도 판별 (408, 429, 500, 502, 503, 504 및 네트워크 에러 대상)
   // POST/PATCH는 멱등하지 않아 재전송 시 중복 처리 위험이 있으므로 기본 재시도에서 제외합니다.
   // 필요하면 retryStrategy를 명시해 재시도할 수 있습니다.
-  const method = options?.method?.toLowerCase();
-  const isIdempotent = method !== 'post' && method !== 'patch';
+  const isIdempotent = !NON_IDEMPOTENT_METHODS.includes(normalizeMethod(options));
   const maxRetries = options?.retry ?? 0;
   const status = context.response?.status;
   const isRetryableStatus = status
-    ? status === 408 || status === 429 || (status >= 500 && status <= 599)
+    ? RETRYABLE_STATUS_CODES.includes(status)
     : Boolean(context.error);
+  // 서버가 상한보다 오래 기다리라고 하면 재시도하지 않고 그 응답을 그대로 반환합니다.
+  const retryAfterMs = context.retryAfterMs;
+  const exceedsRetryAfter =
+    retryAfterMs !== undefined && retryAfterMs > DEFAULT_MAX_DELAY;
   const shouldRetry =
-    isIdempotent && isRetryableStatus && context.attempt <= maxRetries;
-  const delay = options?.delay ?? 0;
+    isIdempotent &&
+    isRetryableStatus &&
+    context.attempt <= maxRetries &&
+    !exceedsRetryAfter;
+  const delay = retryAfterMs ?? options?.delay ?? 0;
 
   return { shouldRetry, delay };
 };
@@ -430,13 +542,17 @@ const computeRetryDecision = async (
  * @param {AppFetchOptions} [options] 사용자 요청 옵션
  * @param {(base?: HeadersInit, custom?: HeadersInit) => Headers} mergeHeaders 헤더 병합 헬퍼
  * @param {AbortController} abortController 타임아웃용 AbortController
+ * @param {BeforeRequestContext} context beforeRequest에 전달할 요청 경로와 시도 횟수
  * @returns {Promise<{ mergeOptions: RequestInit; disposeSignal: () => void }>} 요청 옵션과 시그널 해제 함수
  */
 export const buildRequestInit = async (
   options: AppFetchOptions | undefined,
   mergeHeaders: (base?: HeadersInit, custom?: HeadersInit) => Headers,
   abortController: AbortController,
+  context: BeforeRequestContext,
 ): Promise<{ mergeOptions: RequestInit; disposeSignal: () => void }> => {
+  warnNonIdempotentBackoff(options);
+
   const mergeOptions: RequestInit = {
     ...options,
     baseURL: undefined,
@@ -456,7 +572,17 @@ export const buildRequestInit = async (
   if (options?.method) {
     mergeOptions.method = options.method.toUpperCase();
   }
-  mergeOptions.headers = mergeHeaders(options?.headers);
+  // 인터셉터가 일반 객체를 대입해도 읽을 때는 항상 Headers가 되도록 accessor로 정의합니다.
+  // enumerable이어야 `{ ...options }` 복사에서 headers가 빠지지 않습니다.
+  let headers = mergeHeaders(options?.headers);
+  Object.defineProperty(mergeOptions, 'headers', {
+    get: () => headers,
+    set: (value: HeadersInit) => {
+      headers = value instanceof Headers ? value : new Headers(value);
+    },
+    enumerable: true,
+    configurable: true,
+  });
 
   setupRequestBody(mergeOptions, options);
 
@@ -467,7 +593,7 @@ export const buildRequestInit = async (
   mergeOptions.signal = signal;
 
   try {
-    await beforeRequestHandler(mergeOptions, options?.beforeRequest, signal);
+    await beforeRequestHandler(mergeOptions, options?.beforeRequest, signal, context);
   } catch (error) {
     dispose();
     throw error;
@@ -511,6 +637,8 @@ export const handleRetryOrReturnResponse = async (
       response: retryClone,
       attempt: attemptCount,
       maxRetries: options?.retry ?? 0,
+      method: normalizeMethod(options),
+      retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
     };
 
     const retryDecision = await withOnError(
@@ -603,6 +731,7 @@ export const handleFetchError = async (
       error: formattedError,
       attempt: attemptCount,
       maxRetries: options?.retry ?? 0,
+      method: normalizeMethod(options),
     };
     const errorDecision = await evaluateRetryStrategy(
       errorRetryContext,

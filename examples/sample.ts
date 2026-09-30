@@ -120,7 +120,8 @@ const wrap = async <R = unknown>(
         backendMessage = responseData;
       }
 
-      throw new HttpError(backendMessage, response.status);
+      // 에러 본문을 data로 보존하면 returnError()가 호출부까지 그대로 전달합니다.
+      throw new HttpError(backendMessage, response.status, responseData);
     }
 
     // 4-A. 파일 다운로드 / 바이너리 응답 (Blob) 인 경우
